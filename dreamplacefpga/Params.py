@@ -32,6 +32,8 @@ class Params:
                 self.__dict__[key] = None
         self.__dict__['params_dict'] = params_dict
 
+        self.use_custom_init_place = False
+
     def printWelcome(self):
         """
         @brief print welcome message

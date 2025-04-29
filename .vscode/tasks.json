@@ -1,0 +1,18 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "Run Placer.py",
+        "type": "shell",
+        "command": "/opt/conda/bin/python",
+        "args": [
+          "/DREAMPlaceFPGA/dreamplacefpga/Placer.py",
+          "/DREAMPlaceFPGA/test/FPGA-example1.json"
+        ],
+        "group": {
+          "kind": "build",
+          "isDefault": true
+        }
+      }
+    ]
+  }
