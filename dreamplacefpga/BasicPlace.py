@@ -267,23 +267,31 @@ class BasicPlaceFPGA(nn.Module):
             initLocX = 0.5 * (placedb.xh - placedb.xl)
             initLocY = 0.5 * (placedb.yh - placedb.yl)
 
-        # 在这里添加自定义初始位置加载的代码
-        # 检查是否启用自定义初始位置
-        custom_init_applied = False
-        if hasattr(params, 'use_custom_init_place') and params.use_custom_init_place:
-            # 尝试从与 io_pl 相同路径加载自定义格式文件
-            if hasattr(params, 'io_pl') and params.io_pl:
-                # 从 io_pl 路径派生自定义文件路径
-                io_pl_dir = os.path.dirname(params.io_pl)
-                io_pl_basename = os.path.basename(params.io_pl)
-                custom_file = os.path.join(io_pl_dir, "custom_" + io_pl_basename)
-                
-                # 尝试加载自定义文件
-                if os.path.exists(custom_file):
-                    custom_init_applied = self.load_custom_placement(custom_file, placedb)
 
+        # 首先设置默认位置
         # x position
         self.init_pos[0:placedb.num_physical_nodes] = placedb.node_x
+        # y position
+        self.init_pos[placedb.num_nodes:placedb.num_nodes+placedb.num_physical_nodes] = placedb.node_y
+
+        # 在这里添加自定义初始位置加载的代码
+        # 检查是否启用自定义初始位置
+
+        custom_init_applied = False
+        if hasattr(params, 'use_custom_init_place') and params.use_custom_init_place:
+            # 使用设计文件的路径
+            design_dir = os.path.dirname(params.aux_input)
+            design_name = os.path.basename(params.aux_input).replace(".aux", "")
+            custom_file = os.path.join(design_dir, "custom_" + design_name + ".pl")
+            
+            # 尝试加载自定义文件
+            if os.path.exists(custom_file):
+                custom_init_applied = self.load_custom_placement(custom_file, placedb)
+            else:
+                logging.warning("Custom initial placement enabled but file not found: %s" % custom_file)        
+        
+
+
         # 修改这部分，添加条件判断
         if not custom_init_applied and params.global_place_flag and params.random_center_init_flag:  # move to centroid of layout
             #logging.info("Move cells to the centroid of fixed IOs with random noise")
@@ -295,8 +303,6 @@ class BasicPlaceFPGA(nn.Module):
         if not custom_init_applied:
             self.init_pos[0:placedb.num_movable_nodes] -= (0.5 * placedb.node_size_x[0:placedb.num_movable_nodes])
 
-        # y position
-        self.init_pos[placedb.num_nodes:placedb.num_nodes+placedb.num_physical_nodes] = placedb.node_y
         # 修改这部分，添加条件判断
         if not custom_init_applied and params.global_place_flag and params.random_center_init_flag:  # move to center of layout
             self.init_pos[placedb.num_nodes:placedb.num_nodes+placedb.num_movable_nodes] = np.random.normal(
