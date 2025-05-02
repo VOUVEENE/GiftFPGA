@@ -267,25 +267,72 @@ class BasicPlaceFPGA(nn.Module):
             initLocX = 0.5 * (placedb.xh - placedb.xl)
             initLocY = 0.5 * (placedb.yh - placedb.yl)
 
+
+        # 首先设置默认位置
         # x position
         self.init_pos[0:placedb.num_physical_nodes] = placedb.node_x
-        if params.global_place_flag and params.random_center_init_flag:  # move to centroid of layout
+        # y position
+        self.init_pos[placedb.num_nodes:placedb.num_nodes+placedb.num_physical_nodes] = placedb.node_y
+
+        # 在这里添加自定义初始位置加载的代码
+        # 检查是否启用自定义初始位置
+
+        custom_init_applied = False
+        if hasattr(params, 'use_custom_init_place') and params.use_custom_init_place:
+            # 使用设计文件的路径
+            design_dir = os.path.dirname(params.aux_input)
+            design_name = os.path.basename(params.aux_input).replace(".aux", "")
+            custom_file = os.path.join(design_dir, "custom_" + design_name + ".pl")
+            
+            # 尝试加载自定义文件
+            if os.path.exists(custom_file):
+                custom_init_applied = self.load_custom_placement(custom_file, placedb)
+            else:
+                logging.warning("Custom initial placement enabled but file not found: %s" % custom_file)        
+        
+
+
+        # 修改这部分，添加条件判断
+        if not custom_init_applied and params.global_place_flag and params.random_center_init_flag:  # move to centroid of layout
             #logging.info("Move cells to the centroid of fixed IOs with random noise")
             self.init_pos[0:placedb.num_movable_nodes] = np.random.normal(
                 loc = initLocX,
                 scale = min(placedb.xh - placedb.xl, placedb.yh - placedb.yl) * 0.001,
                 size = placedb.num_movable_nodes)
-        self.init_pos[0:placedb.num_movable_nodes] -= (0.5 * placedb.node_size_x[0:placedb.num_movable_nodes])
+        # 只有在没有应用自定义初始位置时才应用左下角偏移
+        if not custom_init_applied:
+            self.init_pos[0:placedb.num_movable_nodes] -= (0.5 * placedb.node_size_x[0:placedb.num_movable_nodes])
 
-        # y position
-        self.init_pos[placedb.num_nodes:placedb.num_nodes+placedb.num_physical_nodes] = placedb.node_y
-        if params.global_place_flag and params.random_center_init_flag:  # move to center of layout
+        # 修改这部分，添加条件判断
+        if not custom_init_applied and params.global_place_flag and params.random_center_init_flag:  # move to center of layout
             self.init_pos[placedb.num_nodes:placedb.num_nodes+placedb.num_movable_nodes] = np.random.normal(
                 loc = initLocY,
                 scale = min(placedb.xh - placedb.xl, placedb.yh - placedb.yl) * 0.001,
                 size = placedb.num_movable_nodes)
-        self.init_pos[placedb.num_nodes:placedb.num_nodes+placedb.num_movable_nodes] -= (0.5 * placedb.node_size_y[0:placedb.num_movable_nodes])
+        # 只有在没有应用自定义初始位置时才应用左下角偏移
+        if not custom_init_applied:
+            self.init_pos[placedb.num_nodes:placedb.num_nodes+placedb.num_movable_nodes] -= (0.5 * placedb.node_size_y[0:placedb.num_movable_nodes])
         #logging.info("Random Init Place in python takes %.2f seconds" % (time.time() - tt))
+
+        # # x position
+        # self.init_pos[0:placedb.num_physical_nodes] = placedb.node_x
+        # if params.global_place_flag and params.random_center_init_flag:  # move to centroid of layout
+        #     #logging.info("Move cells to the centroid of fixed IOs with random noise")
+        #     self.init_pos[0:placedb.num_movable_nodes] = np.random.normal(
+        #         loc = initLocX,
+        #         scale = min(placedb.xh - placedb.xl, placedb.yh - placedb.yl) * 0.001,
+        #         size = placedb.num_movable_nodes)
+        # self.init_pos[0:placedb.num_movable_nodes] -= (0.5 * placedb.node_size_x[0:placedb.num_movable_nodes])
+
+        # # y position
+        # self.init_pos[placedb.num_nodes:placedb.num_nodes+placedb.num_physical_nodes] = placedb.node_y
+        # if params.global_place_flag and params.random_center_init_flag:  # move to center of layout
+        #     self.init_pos[placedb.num_nodes:placedb.num_nodes+placedb.num_movable_nodes] = np.random.normal(
+        #         loc = initLocY,
+        #         scale = min(placedb.xh - placedb.xl, placedb.yh - placedb.yl) * 0.001,
+        #         size = placedb.num_movable_nodes)
+        # self.init_pos[placedb.num_nodes:placedb.num_nodes+placedb.num_movable_nodes] -= (0.5 * placedb.node_size_y[0:placedb.num_movable_nodes])
+        # #logging.info("Random Init Place in python takes %.2f seconds" % (time.time() - tt))
 
         if placedb.num_filler_nodes:  # uniformly distribute filler cells in the layout
             ### uniformly spread fillers in fence region
@@ -695,3 +742,46 @@ class BasicPlaceFPGA(nn.Module):
         logging.info("plotting to %s takes %.3f seconds" %
                      (figname, time.time() - tt))
 
+    def load_custom_placement(self, custom_file, placedb):
+        """
+        @brief 从文件加载自定义初始位置
+        @param custom_file 自定义位置文件路径
+        @param placedb 布局数据库
+        """
+        logging.info("Loading custom initial placement from %s" % (custom_file))
+        try:
+            with open(custom_file, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    # 跳过空行和注释
+                    if not line or line.startswith("#"):
+                        continue
+                        
+                    tokens = line.split()
+                    if len(tokens) >= 4:  # 要求至少有 node_name, x, y, z
+                        node_name = tokens[0]
+                        if node_name in placedb.node_name2id_map:
+                            node_id = placedb.node_name2id_map[node_name]
+                            if node_id < placedb.num_movable_nodes:  # 只处理可移动节点
+                                x = float(tokens[1])
+                                y = float(tokens[2])
+                                z = int(tokens[3])
+                                
+                                # 设置 x 位置
+                                self.init_pos[node_id] = x
+                                
+                                # 设置 y 位置
+                                self.init_pos[placedb.num_nodes + node_id] = y
+                                
+                                # 记录 z 位置（可能需要在其他地方使用）
+                                if hasattr(placedb, 'node_z'):
+                                    placedb.node_z[node_id] = z
+                                
+                                logging.debug("Set initial position for node %s (%d) to (%g, %g, %d)" % 
+                                            (node_name, node_id, x, y, z))
+            
+            logging.info("Custom initial placement loaded successfully")
+            return True
+        except Exception as e:
+            logging.error("Failed to load custom initial placement: %s" % (str(e)))
+            return False
