@@ -299,7 +299,30 @@
 
 "use_custom_init_place": {
     "descripton": "Flag to enable custom initial placement from custom format",
+    "default": 0        
+    },
+"use_gift_init_place": {
+    "descripton": "使用GiFt(图信号处理)算法优化初始布局",
     "default": 0
-        
+    },
+"gift_alpha0": {
+    "descripton": "GiFt高频滤波器权重",
+    "default": 0.1
+    },
+"gift_alpha1": {
+    "descripton": "GiFt中频滤波器权重",
+    "default": 0.7
+    },
+"gift_alpha2": {
+    "descripton": "GiFt低频滤波器权重",
+    "default": 0.2
+    },
+"gift_enable_boundary_constraints": {
+    "descripton": "是否启用GiFt边界约束",
+    "default": 1
+    },
+"gift_enable_resource_constraints": {
+    "descripton": "是否启用GiFt资源区域约束",
+    "default": 1
     }
 }

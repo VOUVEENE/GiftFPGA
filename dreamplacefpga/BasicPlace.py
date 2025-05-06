@@ -30,6 +30,7 @@ import dreamplacefpga.ops.sortNode2Pin.sortNode2Pin as sortNode2Pin
 import dreamplacefpga.ops.lut_ff_legalization.lut_ff_legalization as lut_ff_legalization
 import dreamplacefpga.ops.timing.timing as timing
 import pdb
+from gift_init_placer import GiFtFPGAPlacer
 
 datatypes = {
         'float32' : torch.float32, 
@@ -290,48 +291,57 @@ class BasicPlaceFPGA(nn.Module):
             else:
                 logging.warning("Custom initial placement enabled but file not found: %s" % custom_file)        
         
+        gift_init_applied = False
+        if not custom_init_applied and hasattr(params, 'use_gift_init_place') and params.use_gift_init_place:
+            try:
+                logging.info("使用GiFt（图信号处理）算法优化初始布局...")
+                # 创建GiFt布局器实例
+                gift_placer = GiFtFPGAPlacer(placedb, params)
+                
+                # 执行优化并获取位置
+                gift_positions = gift_placer.get_dreamplace_positions()
+                
+                # 将优化结果应用到初始位置
+                self.init_pos = gift_positions
+                
+                # 保存可视化结果
+                if hasattr(params, 'plot_flag') and params.plot_flag:
+                    design_dir = os.path.dirname(params.aux_input)
+                    design_name = os.path.basename(params.aux_input).replace(".aux", "")
+                    output_file = os.path.join(design_dir, f"{design_name}_gift_init.png")
+                    gift_placer.visualize_placement(output_file)
+        
+                gift_init_applied = True
+                logging.info("GiFt初始化成功应用")
+            except Exception as e:
+                logging.error(f"GiFt初始化失败: {str(e)}")
+                import traceback
+                logging.error(traceback.format_exc())
 
-
-        # 修改这部分，添加条件判断
-        if not custom_init_applied and params.global_place_flag and params.random_center_init_flag:  # move to centroid of layout
-            #logging.info("Move cells to the centroid of fixed IOs with random noise")
+        # 修改下面的条件，考虑gift_init_applied
+        if not custom_init_applied and not gift_init_applied and params.global_place_flag and params.random_center_init_flag:
+            # 原有的随机初始化代码
             self.init_pos[0:placedb.num_movable_nodes] = np.random.normal(
                 loc = initLocX,
                 scale = min(placedb.xh - placedb.xl, placedb.yh - placedb.yl) * 0.001,
                 size = placedb.num_movable_nodes)
-        # 只有在没有应用自定义初始位置时才应用左下角偏移
-        if not custom_init_applied:
+
+        # 只有在没有应用自定义初始位置和GiFt初始化时才应用左下角偏移
+        if not custom_init_applied and not gift_init_applied:
             self.init_pos[0:placedb.num_movable_nodes] -= (0.5 * placedb.node_size_x[0:placedb.num_movable_nodes])
 
-        # 修改这部分，添加条件判断
-        if not custom_init_applied and params.global_place_flag and params.random_center_init_flag:  # move to center of layout
+        # 修改y坐标初始化条件
+        if not custom_init_applied and not gift_init_applied and params.global_place_flag and params.random_center_init_flag:
+            # 原有的随机初始化代码
             self.init_pos[placedb.num_nodes:placedb.num_nodes+placedb.num_movable_nodes] = np.random.normal(
                 loc = initLocY,
                 scale = min(placedb.xh - placedb.xl, placedb.yh - placedb.yl) * 0.001,
                 size = placedb.num_movable_nodes)
-        # 只有在没有应用自定义初始位置时才应用左下角偏移
-        if not custom_init_applied:
+
+        # 只有在没有应用自定义初始位置和GiFt初始化时才应用左下角偏移
+        if not custom_init_applied and not gift_init_applied:
             self.init_pos[placedb.num_nodes:placedb.num_nodes+placedb.num_movable_nodes] -= (0.5 * placedb.node_size_y[0:placedb.num_movable_nodes])
-        #logging.info("Random Init Place in python takes %.2f seconds" % (time.time() - tt))
 
-        # # x position
-        # self.init_pos[0:placedb.num_physical_nodes] = placedb.node_x
-        # if params.global_place_flag and params.random_center_init_flag:  # move to centroid of layout
-        #     #logging.info("Move cells to the centroid of fixed IOs with random noise")
-        #     self.init_pos[0:placedb.num_movable_nodes] = np.random.normal(
-        #         loc = initLocX,
-        #         scale = min(placedb.xh - placedb.xl, placedb.yh - placedb.yl) * 0.001,
-        #         size = placedb.num_movable_nodes)
-        # self.init_pos[0:placedb.num_movable_nodes] -= (0.5 * placedb.node_size_x[0:placedb.num_movable_nodes])
-
-        # # y position
-        # self.init_pos[placedb.num_nodes:placedb.num_nodes+placedb.num_physical_nodes] = placedb.node_y
-        # if params.global_place_flag and params.random_center_init_flag:  # move to center of layout
-        #     self.init_pos[placedb.num_nodes:placedb.num_nodes+placedb.num_movable_nodes] = np.random.normal(
-        #         loc = initLocY,
-        #         scale = min(placedb.xh - placedb.xl, placedb.yh - placedb.yl) * 0.001,
-        #         size = placedb.num_movable_nodes)
-        # self.init_pos[placedb.num_nodes:placedb.num_nodes+placedb.num_movable_nodes] -= (0.5 * placedb.node_size_y[0:placedb.num_movable_nodes])
         # #logging.info("Random Init Place in python takes %.2f seconds" % (time.time() - tt))
 
         if placedb.num_filler_nodes:  # uniformly distribute filler cells in the layout
