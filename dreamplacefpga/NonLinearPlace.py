@@ -237,7 +237,7 @@ class NonLinearPlaceFPGA (BasicPlaceFPGA):
                         assert 0, "unsupported optimizer %s" % (optimizer_name)
 
                     # plot placement 
-                    if params.plot_flag and (iteration % 5 == 0): 
+                    if params.plot_flag and (iteration % 100 == 0): 
                         cur_pos = self.pos[0].data.clone().cpu().numpy()
                         self.plot(params, placedb, iteration, cur_pos)
 

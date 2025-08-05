@@ -4,7 +4,7 @@
 # @date   Sep 2020
 # @brief  Main file to run the entire placement flow. 
 #
-
+import warnings
 import matplotlib 
 matplotlib.use('Agg')
 import os
@@ -102,6 +102,10 @@ if __name__ == "__main__":
     """
     @brief main function to invoke the entire placement flow. 
     """
+    #删除不影响结果的警告
+    warnings.filterwarnings("ignore", message=".*torch.rfft.*")
+    warnings.filterwarnings("ignore", message=".*torch.irfft.*")
+
     logging.root.name = 'DREAMPlaceFPGA'
     logging.basicConfig(level=logging.INFO, format='[%(levelname)-7s] %(name)s - %(message)s', stream=sys.stdout)
 
@@ -130,3 +134,66 @@ if __name__ == "__main__":
         placeFPGA(params)
     # logging.info("Completed Placement in %.3f seconds" % (time.time()-tt))
 
+# #单次执行，log打印
+# if __name__ == "__main__":
+#     """
+#     @brief main function to invoke the entire placement flow. 
+#     """
+#     import os
+    
+#     if len(sys.argv) < 2:
+#         print("Error: Input parameters required in json format")
+#         sys.exit(1)
+
+#     # 加载参数
+#     params = ParamsFPGA()
+#     params.load(sys.argv[1])
+
+#     # 配置日志
+#     logger = logging.getLogger('DREAMPlaceFPGA')
+#     logger.setLevel(logging.INFO)
+    
+#     # 清除可能存在的handlers
+#     logger.handlers.clear()
+    
+#     formatter = logging.Formatter('[%(levelname)-7s] %(name)s - %(message)s')
+
+#     # 控制台输出
+#     console_handler = logging.StreamHandler(sys.stdout)
+#     console_handler.setLevel(logging.INFO)
+#     console_handler.setFormatter(formatter)
+#     logger.addHandler(console_handler)
+
+#     # 文件输出（如果启用）
+#     log_to_file = getattr(params, 'log_to_file', 0)
+#     if log_to_file:
+#         log_file = os.path.join(params.result_dir, params.design_name(), '%s.log' % params.design_name())
+        
+#         # 确保目录存在
+#         os.makedirs(os.path.dirname(log_file), exist_ok=True)
+
+#         file_handler = logging.FileHandler(log_file, mode='w')
+#         file_handler.setLevel(logging.INFO)
+#         file_handler.setFormatter(formatter)
+#         logger.addHandler(file_handler)
+        
+#         logger.info(f"Logging to file: {log_file}")  # 使用logger而不是logging
+
+#     # 防止传播到root logger
+#     logger.propagate = False
+
+#     logger.info("Parameters = %s" % params)
+
+#     # Settings to minimize non-determinism
+#     torch.backends.cudnn.deterministic = True
+#     torch.backends.cudnn.benchmark = False
+#     torch.backends.cudnn.enabled = False 
+    
+#     torch.manual_seed(params.random_seed)
+#     np.random.seed(params.random_seed)
+#     if params.gpu:
+#         torch.cuda.manual_seed_all(params.random_seed)
+#         torch.cuda.manual_seed(params.random_seed)
+
+#     # 执行placement
+#     placeFPGA(params)

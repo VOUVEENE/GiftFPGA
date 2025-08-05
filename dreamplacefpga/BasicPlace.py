@@ -307,8 +307,8 @@ class BasicPlaceFPGA(nn.Module):
                 # 保存可视化结果
                 if hasattr(params, 'plot_flag') and params.plot_flag:
                     design_dir = os.path.dirname(params.aux_input)
-                    design_name = os.path.basename(params.aux_input).replace(".aux", "")
-                    output_file = os.path.join(design_dir, f"{design_name}_gift_init.png")
+                    design_name = os.path.basename(design_dir)
+                    output_file = os.path.join(params.result_dir, design_name,f"{design_name}_gift_init.png")
                     gift_placer.visualize_placement(output_file)
         
                 gift_init_applied = True

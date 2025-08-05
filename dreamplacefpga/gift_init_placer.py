@@ -268,6 +268,12 @@ class GiFtFPGAPlacer:
         )
         
         optimized_positions = np.column_stack((g_prime_x, g_prime_y))
+
+        # 立即恢复固定节点位置
+        placedb = self.placedb
+        num_movable = placedb.num_movable_nodes
+        optimized_positions[num_movable:] = initial_positions[num_movable:]
+    
         return optimized_positions
     
     def apply_placement_constraints(self, positions):
@@ -286,8 +292,8 @@ class GiFtFPGAPlacer:
         constrained_positions = positions.copy()
         
         # 保持固定节点不变
-        for i in range(placedb.num_movable_nodes, placedb.num_physical_nodes):
-            constrained_positions[i] = positions[i]
+        # for i in range(placedb.num_movable_nodes, placedb.num_physical_nodes):
+        #     constrained_positions[i] = positions[i]
         
         # 为可移动节点应用约束
         for i in range(placedb.num_movable_nodes):
@@ -370,8 +376,9 @@ class GiFtFPGAPlacer:
         self.optimized_positions = self.apply_placement_constraints(self.optimized_positions)
         
         # 还原固定节点的位置（以防万一）
-        for i in range(self.placedb.num_movable_nodes, self.placedb.num_physical_nodes):
-            self.optimized_positions[i] = self.initial_positions[i]
+        # for i in range(self.placedb.num_movable_nodes, self
+        # acedb.num_physical_nodes):
+        #     self.optimized_positions[i] = self.initial_positions[i]
         
         # 计算初始和优化后的HPWL
         initial_wl = self.calculate_hpwl(self.initial_positions)

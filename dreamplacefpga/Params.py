@@ -156,7 +156,9 @@ class Params:
         if self.aux_input == "":
             design_name = "design"
         else:
-            design_name = os.path.basename(self.aux_input).replace(".aux", "").replace(".AUX", "")
+            #修改输出文件目录结构，来做对比
+            design_name = os.path.basename(os.path.dirname(self.aux_input))
+            #design_name = os.path.basename(self.aux_input).replace(".aux", "").replace(".AUX", "")
         return design_name 
     
     def part_name(self):
