@@ -293,30 +293,7 @@ class BasicPlaceFPGA(nn.Module):
         
         gift_init_applied = False
         if not custom_init_applied and hasattr(params, 'use_gift_init_place') and params.use_gift_init_place:
-            try:
-                logging.info("使用GiFt（图信号处理）算法优化初始布局...")
-                # 创建GiFt布局器实例
-                gift_placer = GiFtFPGAPlacer(placedb, params)
-                
-                # 执行优化并获取位置
-                gift_positions = gift_placer.get_dreamplace_positions()
-                
-                # 将优化结果应用到初始位置
-                self.init_pos = gift_positions
-                
-                # 保存可视化结果
-                if hasattr(params, 'plot_flag') and params.plot_flag:
-                    design_dir = os.path.dirname(params.aux_input)
-                    design_name = os.path.basename(design_dir)
-                    output_file = os.path.join(params.result_dir, design_name,f"{design_name}_gift_init.png")
-                    gift_placer.visualize_placement(output_file)
-        
-                gift_init_applied = True
-                logging.info("GiFt初始化成功应用")
-            except Exception as e:
-                logging.error(f"GiFt初始化失败: {str(e)}")
-                import traceback
-                logging.error(traceback.format_exc())
+            gift_init_applied = self.initialize_gift_placement(placedb, params)
 
         # 修改下面的条件，考虑gift_init_applied
         if not custom_init_applied and not gift_init_applied and params.global_place_flag and params.random_center_init_flag:
@@ -794,4 +771,52 @@ class BasicPlaceFPGA(nn.Module):
             return True
         except Exception as e:
             logging.error("Failed to load custom initial placement: %s" % (str(e)))
+            return False
+    
+    def initialize_gift_placement(self, placedb, params):
+        """GiFt初始化方法 - 集成网络分析"""
+        try:
+            logging.info("使用GiFt（图信号处理）算法优化初始布局...")
+            
+            # 检查网络分析器可用性
+            enable_analysis = getattr(params, 'enable_network_analysis', False)
+            if enable_analysis:
+                try:
+                    from large_network_analyzer import LargeNetworkAnalyzer
+                    logging.info("网络分析器模块可用")
+                except ImportError:
+                    logging.warning("网络分析器模块未找到，将禁用网络分析功能")
+                    params.enable_network_analysis = False
+            
+            # 创建GiFt布局器实例（已集成网络分析功能）
+            gift_placer = GiFtFPGAPlacer(placedb, params)
+            
+            # 执行优化并获取位置
+            gift_positions = gift_placer.get_dreamplace_positions()
+            
+            # 将优化结果应用到初始位置
+            self.init_pos = gift_positions
+            
+            # 保存可视化结果
+            if hasattr(params, 'plot_flag') and params.plot_flag:
+                try:
+                    design_dir = os.path.dirname(params.aux_input)
+                    design_name = os.path.basename(design_dir)
+                    
+                    # 确保结果目录存在
+                    result_path = os.path.join(params.result_dir, design_name)
+                    os.makedirs(result_path, exist_ok=True)
+                    
+                    output_file = os.path.join(result_path, f"{design_name}_gift_init.png")
+                    gift_placer.visualize_placement(output_file)
+                except Exception as e:
+                    logging.warning(f"可视化保存失败: {e}")
+            
+            logging.info("GiFt初始化成功应用")
+            return True
+            
+        except Exception as e:
+            logging.error(f"GiFt初始化失败: {str(e)}")
+            import traceback
+            logging.error(traceback.format_exc())
             return False

@@ -1,4 +1,4 @@
-# gift_placer_fixed.py
+# gift_init_placer.py
 import numpy as np
 import scipy.sparse as sp
 import matplotlib.pyplot as plt
@@ -6,6 +6,14 @@ from collections import defaultdict
 import time
 import os
 import logging
+
+# 导入独立的网络分析器
+try:
+    from large_network_analyzer import LargeNetworkAnalyzer
+    ANALYZER_AVAILABLE = True
+except ImportError:
+    logging.warning("large_network_analyzer.py 未找到，网络分析功能将被禁用")
+    ANALYZER_AVAILABLE = False
 
 class GiFtFPGAPlacer:
     """
@@ -35,9 +43,23 @@ class GiFtFPGAPlacer:
         self.alpha1 = getattr(params, 'gift_alpha1', 0.7)  # 中通滤波器权重
         self.alpha2 = getattr(params, 'gift_alpha2', 0.2)  # 低通滤波器权重
         
+        # 优化参数
+        self.max_net_size = getattr(params, 'gift_max_net_size', 1000)
+        self.use_star_model = getattr(params, 'gift_use_star_model', True)
+        self.optimize_large_nets = getattr(params, 'gift_optimize_large_nets', True)
+        
+        # sigma参数（控制归一化强度）
+        self.sigma_2 = getattr(params, 'gift_sigma_2', 1.5)
+        self.sigma_4 = getattr(params, 'gift_sigma_4', 3.0)
+        
         # 约束控制参数
         self.enable_boundary_constraints = getattr(params, 'gift_enable_boundary_constraints', True)
         self.enable_resource_constraints = getattr(params, 'gift_enable_resource_constraints', True)
+        
+        # 网络分析参数
+        self.enable_network_analysis = getattr(params, 'enable_network_analysis', False) and ANALYZER_AVAILABLE
+        self.analysis_threshold = getattr(params, 'net_analysis_threshold', 50)
+        self.skip_threshold = getattr(params, 'net_skip_threshold', 200)
         
         # 布局区域边界
         self.xl = placedb.xl
@@ -49,7 +71,13 @@ class GiFtFPGAPlacer:
         self.node_to_idx = {}
         self.idx_to_node = {}
         for i in range(placedb.num_physical_nodes):
-            node_name = placedb.node_names[i]
+            if hasattr(placedb, 'node_names') and placedb.node_names is not None:
+                if i < len(placedb.node_names):
+                    node_name = placedb.node_names[i]
+                else:
+                    node_name = f"node_{i}"
+            else:
+                node_name = f"node_{i}"
             self.node_to_idx[node_name] = i
             self.idx_to_node[i] = node_name
         
@@ -67,7 +95,21 @@ class GiFtFPGAPlacer:
         # 从placedb导入资源区域信息
         self.import_resource_regions()
         
-        logging.info(f"GiFt优化版本初始化完成 - 边界约束: {'启用' if self.enable_boundary_constraints else '禁用'}, 资源约束: {'启用' if self.enable_resource_constraints else '禁用'}")
+        # 初始化网络分析器（如果启用）
+        if self.enable_network_analysis:
+            try:
+                self.network_analyzer = LargeNetworkAnalyzer(placedb, params)
+                logging.info("网络分析器已启用")
+            except Exception as e:
+                logging.error(f"网络分析器初始化失败: {e}")
+                self.network_analyzer = None
+                self.enable_network_analysis = False
+        else:
+            self.network_analyzer = None
+        
+        logging.info(f"GiFt优化版本初始化完成 - 边界约束: {'启用' if self.enable_boundary_constraints else '禁用'}, "
+                    f"资源约束: {'启用' if self.enable_resource_constraints else '禁用'}, "
+                    f"网络分析: {'启用' if self.enable_network_analysis else '禁用'}")
     
     def import_resource_regions(self):
         """从placedb导入资源区域信息"""
@@ -77,15 +119,16 @@ class GiFtFPGAPlacer:
         resource_types = ['LUT', 'FF', 'DSP', 'RAM']
         
         # 导入资源区域
-        for i, regions in enumerate(placedb.region_boxes):
-            if i < 4:  # 只处理前4个区域（资源区域）
-                resource_type = resource_types[i]
-                self.resource_regions[resource_type] = []
-                
-                for region in regions:
-                    self.resource_regions[resource_type].append(region)
-                
-                logging.info(f"导入资源区域 - {resource_type}: {len(regions)}个区域")
+        if hasattr(placedb, 'region_boxes') and placedb.region_boxes:
+            for i, regions in enumerate(placedb.region_boxes):
+                if i < 4:  # 只处理前4个区域（资源区域）
+                    resource_type = resource_types[i]
+                    self.resource_regions[resource_type] = []
+                    
+                    for region in regions:
+                        self.resource_regions[resource_type].append(region)
+                    
+                    logging.info(f"导入资源区域 - {resource_type}: {len(regions)}个区域")
     
     def calculate_initial_center(self):
         """计算初始中心位置，与BasicPlace方法相同"""
@@ -99,10 +142,11 @@ class GiFtFPGAPlacer:
             numPins = 0
             # 使用固定引脚位置的平均值作为初始位置
             for nodeID in range(placedb.num_movable_nodes, placedb.num_physical_nodes):
-                for pID in placedb.node2pin_map[nodeID]:
-                    initLocX += placedb.node_x[nodeID] + placedb.pin_offset_x[pID]
-                    initLocY += placedb.node_y[nodeID] + placedb.pin_offset_y[pID]
-                numPins += len(placedb.node2pin_map[nodeID])
+                if hasattr(placedb, 'node2pin_map') and nodeID < len(placedb.node2pin_map):
+                    for pID in placedb.node2pin_map[nodeID]:
+                        initLocX += placedb.node_x[nodeID] + placedb.pin_offset_x[pID]
+                        initLocY += placedb.node_y[nodeID] + placedb.pin_offset_y[pID]
+                    numPins += len(placedb.node2pin_map[nodeID])
             
             if numPins > 0:
                 initLocX /= numPins
@@ -117,174 +161,202 @@ class GiFtFPGAPlacer:
         return initLocX, initLocY
     
     def build_adjacency_matrix(self):
-        """构建节点之间的邻接矩阵 - 完整版本"""
+        """构建邻接矩阵 - 集成网络分析功能"""
         if self.adjacency_built:
             return
             
-        logging.info("构建邻接矩阵...")
+        # 如果启用网络分析，先进行分析
+        large_nets = []
+        if self.enable_network_analysis and self.network_analyzer:
+            try:
+                large_nets = self.network_analyzer.analyze_large_networks(self.analysis_threshold)
+                self.adjust_processing_strategy(large_nets)
+            except Exception as e:
+                logging.error(f"网络分析失败: {e}")
+        
+        logging.info("构建优化的邻接矩阵...")
         start_time = time.time()
         
         placedb = self.placedb
         n = placedb.num_physical_nodes
-        A = sp.lil_matrix((n, n), dtype=np.float32)
         
-        # 添加调试信息
-        logging.info(f"节点总数: {n}, 网络总数: {placedb.num_nets}")
+        # 使用字典收集边，避免重复
+        edge_weights = defaultdict(float)
+        processing_stats = defaultdict(int)
         
-        # 统计信息
-        total_edges = 0
-        net_size_stats = []
-        
-        # 使用GiFt论文的clique模型构建邻接矩阵（基于引脚）
         for net_id in range(placedb.num_nets):
-            # 获取该网络的引脚范围
             pin_start = placedb.flat_net2pin_start_map[net_id]
             pin_end = placedb.flat_net2pin_start_map[net_id + 1]
             num_pins = pin_end - pin_start
             
             if num_pins < 2:
-                continue  # 跳过只有一个引脚的网络
+                continue
             
-            net_size_stats.append(num_pins)
+            # 根据配置选择处理策略
+            strategy = self._get_net_processing_strategy(net_id, num_pins)
             
-            # 使用GiFt论文的权重公式：2/M (M是引脚数)
-            weight = 2.0 / num_pins
-            
-            # 检查net_mask过滤（如果存在）
-            if hasattr(placedb, 'net_mask') and placedb.net_mask is not None:
-                if not placedb.net_mask[net_id]:
-                    continue
-            
-            # 使用clique模型：基于引脚构建边（与DREAMPlace和GiFt论文相同的方式）
-            for j in range(pin_start, pin_end):
-                flat_pin_id_1 = placedb.flat_net2pin_map[j]
-                node_id_1 = placedb.pin2node_map[flat_pin_id_1]
-                
-                for k in range(j + 1, pin_end):
-                    flat_pin_id_2 = placedb.flat_net2pin_map[k]
-                    node_id_2 = placedb.pin2node_map[flat_pin_id_2]
-                    
-                    # 确保节点ID有效且不同
-                    if (node_id_1 < n and node_id_2 < n and 
-                        node_id_1 != node_id_2):
-                        try:
-                            A[node_id_1, node_id_2] += weight
-                            A[node_id_2, node_id_1] += weight
-                            total_edges += 1
-                        except Exception as e:
-                            logging.error(f"添加边时出错: net_id={net_id}, node1={node_id_1}, node2={node_id_2}, error={e}")
-                            continue
+            if strategy == 'SKIP':
+                processing_stats['SKIPPED'] += 1
+                continue
+            elif strategy == 'STAR':
+                self._add_star_model_edges(net_id, pin_start, pin_end, edge_weights, n)
+                processing_stats['STAR'] += 1
+            else:  # CLIQUE
+                self._add_clique_model_edges(net_id, pin_start, pin_end, edge_weights, n)
+                processing_stats['CLIQUE'] += 1
         
-        # 打印网络大小统计信息
-        if net_size_stats:
-            logging.info(f"网络大小统计:")
-            logging.info(f"  平均大小: {np.mean(net_size_stats):.2f}")
-            logging.info(f"  最大大小: {max(net_size_stats)}")
-            logging.info(f"  大网络(>50)数量: {sum(1 for s in net_size_stats if s > 50)}")
-            logging.info(f"  超大网络(>100)数量: {sum(1 for s in net_size_stats if s > 100)}")
+        logging.info(f"网络处理统计: {dict(processing_stats)}")
         
-        logging.info(f"构建完成，总边数: {total_edges}")
-        
-        # 检查矩阵是否为空
-        if A.nnz == 0:
-            logging.error("邻接矩阵为空！这可能表示数据有问题")
-            # 创建一个最小的有效矩阵
+        # 构建矩阵
+        if not edge_weights:
             A = sp.eye(n, format='csr') * 0.1
-            logging.warning("使用最小单位矩阵替代")
-        
-        A = A.tocsr()  # 转换为CSR格式以加速计算
+            logging.warning("没有生成任何边，使用最小单位矩阵")
+        else:
+            rows, cols, weights = [], [], []
+            for (i, j), w in edge_weights.items():
+                rows.extend([i, j])
+                cols.extend([j, i])
+                weights.extend([w, w])
+            
+            A = sp.coo_matrix(
+                (weights, (rows, cols)), 
+                shape=(n, n), 
+                dtype=np.float32
+            ).tocsr()
         
         # 预计算归一化邻接矩阵
         logging.info("计算归一化邻接矩阵...")
         try:
-            self.A_tilde_2 = self.get_normalized_adjacency(A, sigma=2)
-            self.A_tilde_4 = self.get_normalized_adjacency(A, sigma=4)
-            logging.info("归一化邻接矩阵计算成功")
+            self.A_tilde_2 = self.get_normalized_adjacency(A, sigma=self.sigma_2)
+            self.A_tilde_4 = self.get_normalized_adjacency(A, sigma=self.sigma_4)
         except Exception as e:
             logging.error(f"计算归一化邻接矩阵时出错: {e}")
-            # 使用简单的归一化方法作为备选
-            self.A_tilde_2 = A + 2 * sp.eye(n, format='csr')
-            self.A_tilde_4 = A + 4 * sp.eye(n, format='csr')
-            logging.warning("使用简化的归一化方法")
-        
-        # 确保矩阵不为None
-        if self.A_tilde_2 is None or self.A_tilde_4 is None:
-            logging.error("归一化邻接矩阵为None，创建默认矩阵")
-            self.A_tilde_2 = sp.eye(n, format='csr')
-            self.A_tilde_4 = sp.eye(n, format='csr')
+            self.A_tilde_2 = A + self.sigma_2 * sp.eye(n, format='csr')
+            self.A_tilde_4 = A + self.sigma_4 * sp.eye(n, format='csr')
         
         self.adjacency_built = True
         
-        # 打印详细的稀疏度统计信息
-        logging.info(f"邻接矩阵构建完成，耗时: {time.time() - start_time:.3f}s")
-        logging.info(f"统计信息: 总边数={total_edges:,}")
-        logging.info(f"原始邻接矩阵: {A.nnz:,} 非零元素, 密度: {A.nnz/(n*n)*100:.4f}%")
-        logging.info(f"A_tilde_2: {self.A_tilde_2.nnz:,} 非零元素, 密度: {self.A_tilde_2.nnz/(n*n)*100:.4f}%")
-        logging.info(f"A_tilde_4: {self.A_tilde_4.nnz:,} 非零元素, 密度: {self.A_tilde_4.nnz/(n*n)*100:.4f}%")
+        build_time = time.time() - start_time
+        density = A.nnz / (n * n) * 100
         
-        # 如果密度仍然太高，发出警告
-        density = A.nnz/(n*n)*100
-        if density > 5.0:
-            logging.warning(f"邻接矩阵密度过高 ({density:.2f}%)，这可能是设计特性")
-            logging.warning("现代FPGA设计可能确实具有较高的连接密度")
+        logging.info(f"邻接矩阵构建完成，耗时: {build_time:.3f}s")
+        logging.info(f"矩阵统计: {A.nnz:,} 非零元素, 密度: {density:.4f}%")
+    
+    def _get_net_processing_strategy(self, net_id, num_pins):
+        """确定网络的处理策略"""
+        # 如果有网络分析器，使用精确分类
+        if self.enable_network_analysis and self.network_analyzer:
+            net_name = self.network_analyzer.get_net_name(net_id)
+            net_type = self.network_analyzer.classify_network_type(net_id, net_name, num_pins)
+            
+            if net_type in ['CLOCK', 'POWER', 'RESET'] or num_pins > self.max_net_size:
+                return 'SKIP'
+            elif num_pins > 100 and self.use_star_model:
+                return 'STAR'
+            else:
+                return 'CLIQUE'
         else:
-            logging.info(f"邻接矩阵密度正常 ({density:.2f}%)")
+            # 使用简单的大小基础策略
+            if num_pins > self.max_net_size:
+                return 'SKIP'
+            elif num_pins > 100 and self.use_star_model:
+                return 'STAR'
+            else:
+                return 'CLIQUE'
+    
+    def _add_star_model_edges(self, net_id, pin_start, pin_end, edge_weights, n):
+        """为网络添加星形模型边"""
+        placedb = self.placedb
+        
+        # 收集有效节点
+        nodes = []
+        for j in range(pin_start, pin_end):
+            flat_pin_id = placedb.flat_net2pin_map[j]
+            node_id = placedb.pin2node_map[flat_pin_id]
+            if node_id < n:
+                nodes.append(node_id)
+        
+        if len(nodes) < 2:
+            return
+        
+        # 选择中心节点（简单选择第一个）
+        center_node = nodes[0]
+        star_weight = 2.0 / len(nodes)
+        
+        # 连接中心到其他所有节点
+        for node_id in nodes[1:]:
+            edge = (min(center_node, node_id), max(center_node, node_id))
+            edge_weights[edge] += star_weight
+    
+    def _add_clique_model_edges(self, net_id, pin_start, pin_end, edge_weights, n):
+        """为网络添加clique模型边"""
+        placedb = self.placedb
+        num_pins = pin_end - pin_start
+        weight = 2.0 / num_pins
+        
+        # 收集有效节点
+        nodes = []
+        for j in range(pin_start, pin_end):
+            flat_pin_id = placedb.flat_net2pin_map[j]
+            node_id = placedb.pin2node_map[flat_pin_id]
+            if node_id < n:
+                nodes.append(node_id)
+        
+        # 生成所有节点对之间的边
+        for i in range(len(nodes)):
+            for j in range(i + 1, len(nodes)):
+                node1, node2 = nodes[i], nodes[j]
+                edge = (min(node1, node2), max(node1, node2))
+                edge_weights[edge] += weight
+    
+    def adjust_processing_strategy(self, large_nets):
+        """根据分析结果调整处理策略"""
+        if not large_nets or not self.network_analyzer:
+            return
+            
+        strategy_stats = defaultdict(int)
+        
+        for net_info in large_nets:
+            strategy = self.network_analyzer.get_processing_strategy(net_info)
+            strategy_stats[strategy] += 1
+        
+        if strategy_stats:
+            logging.info(f"\n--- 网络处理策略分配 ---")
+            total = sum(strategy_stats.values())
+            for strategy, count in strategy_stats.items():
+                percentage = count / total * 100
+                logging.info(f"{strategy:6}: {count:3}个网络 ({percentage:5.1f}%)")
     
     def get_normalized_adjacency(self, A, sigma=2):
         """
         计算归一化邻接矩阵(增加自环) - 带错误处理的版本
-        
-        参数:
-        A: 邻接矩阵
-        sigma: 自环权重
-        
-        返回:
-        A_tilde: 归一化的邻接矩阵(增加自环)
         """
         try:
-            # 增加自环
             n = A.shape[0]
             I = sp.eye(n, format='csr')
             A_sigma = A + sigma * I
             
             # 计算度矩阵
             row_sum = np.array(A_sigma.sum(axis=1)).flatten()
-            
-            # 避免除以零（孤立节点）
-            row_sum[row_sum == 0] = 1.0
+            row_sum[row_sum == 0] = 1e-6  # 避免除以零
             
             # 计算D^(-1/2) * A * D^(-1/2)
             D_sqrt_inv = sp.diags(1.0 / np.sqrt(row_sum), format='csr')
             A_tilde = D_sqrt_inv @ A_sigma @ D_sqrt_inv
             
-            # 检查结果是否有效
-            if A_tilde.nnz == 0:
-                logging.warning(f"归一化后矩阵为空，sigma={sigma}")
-                return A_sigma  # 返回未归一化的版本
-            
             return A_tilde
             
         except Exception as e:
             logging.error(f"归一化计算失败: {e}")
-            # 返回简单的自环矩阵
             n = A.shape[0]
             return A + sigma * sp.eye(n, format='csr')
     
     def matrix_power_iterative(self, A_tilde, positions, k):
         """
         迭代计算 A^k * positions，避免显式计算矩阵幂
-        
-        参数:
-        A_tilde: 归一化邻接矩阵
-        positions: 初始位置 (n, 2)
-        k: 幂次
-        
-        返回:
-        result: A^k * positions 的结果
         """
         result = positions.copy()
         for i in range(k):
-            # 分别计算x和y坐标
             result[:, 0] = A_tilde.dot(result[:, 0])
             result[:, 1] = A_tilde.dot(result[:, 1])
         
@@ -329,15 +401,7 @@ class GiFtFPGAPlacer:
         return initial_positions
     
     def apply_gift(self, initial_positions):
-        """
-        应用优化的GiFt算法计算优化的位置
-        
-        参数:
-        initial_positions: 初始位置，形状为(n, 2)的numpy数组
-        
-        返回:
-        optimized_positions: 优化后的位置，形状为(n, 2)的numpy数组
-        """
+        """应用GiFt算法计算优化的位置"""
         logging.info(f"应用GiFt滤波器... (alpha0={self.alpha0}, alpha1={self.alpha1}, alpha2={self.alpha2})")
         
         # 确保邻接矩阵已构建
@@ -346,11 +410,6 @@ class GiFtFPGAPlacer:
         start_time = time.time()
         
         # 使用迭代方式计算三种滤波器的结果
-        # 对应DREAMPlace的：
-        # location_h = A_tilde_2^2 * positions (高通滤波器)
-        # location_m = A_tilde_4^2 * positions (中通滤波器)
-        # location_l = A_tilde_4^4 * positions (低通滤波器)
-        
         logging.info("计算高通滤波器 (A_tilde_2^2)...")
         pos_high = self.matrix_power_iterative(self.A_tilde_2, initial_positions, 2)
         
@@ -361,7 +420,6 @@ class GiFtFPGAPlacer:
         pos_low = self.matrix_power_iterative(self.A_tilde_4, initial_positions, 4)
         
         # 按照GiFt论文的公式组合结果
-        # 注意：这里修正了原代码中的错误，应该都用相同的坐标轴
         optimized_positions = (
             self.alpha0 * pos_high +
             self.alpha1 * pos_mid + 
@@ -378,11 +436,9 @@ class GiFtFPGAPlacer:
         return optimized_positions
     
     def apply_placement_constraints(self, positions):
-        """
-        应用布局范围约束，确保所有节点都在芯片边界内
-        并满足资源区域约束
-        """
-        logging.info(f"应用布局约束... (边界约束: {'启用' if self.enable_boundary_constraints else '禁用'}, 资源约束: {'启用' if self.enable_resource_constraints else '禁用'})")
+        """应用布局范围约束"""
+        logging.info(f"应用布局约束... (边界约束: {'启用' if self.enable_boundary_constraints else '禁用'}, "
+                    f"资源约束: {'启用' if self.enable_resource_constraints else '禁用'})")
         placedb = self.placedb
         constrained_positions = positions.copy()
         
@@ -400,62 +456,62 @@ class GiFtFPGAPlacer:
                 center_x = max(placedb.xl + half_width, min(center_x, placedb.xh - half_width))
                 center_y = max(placedb.yl + half_height, min(center_y, placedb.yh - half_height))
             
-            # 应用资源区域约束（如果启用）
-            if self.enable_resource_constraints:
-                resource_type = None
-                if placedb.lut_mask[i]:
-                    resource_type = 'LUT'
-                elif placedb.flop_mask[i]:
-                    resource_type = 'FF'
-                elif placedb.dsp_mask[i]:
-                    resource_type = 'DSP'
-                elif placedb.ram_mask[i]:
-                    resource_type = 'RAM'
-                
-                # 找到对应的资源区域
-                if resource_type is not None and resource_type in self.resource_regions:
-                    regions = self.resource_regions[resource_type]
-                    if len(regions) > 0:
-                        # 检查是否已在某个区域内
-                        in_region = False
-                        for region in regions:
-                            if (region[0] + half_width <= center_x <= region[2] - half_width and
-                                region[1] + half_height <= center_y <= region[3] - half_height):
-                                in_region = True
-                                break
-                        
-                        # 如果不在区域内，找到最近的区域并投影到其中
-                        if not in_region:
-                            min_dist = float('inf')
-                            best_pos = (center_x, center_y)
-                            
-                            for region in regions:
-                                # 计算到区域边界的最短距离投影点
-                                x_proj = max(region[0] + half_width, 
-                                            min(center_x, region[2] - half_width))
-                                y_proj = max(region[1] + half_height, 
-                                            min(center_y, region[3] - half_height))
-                                
-                                # 计算到投影点的距离
-                                dist = np.sqrt((center_x - x_proj)**2 + (center_y - y_proj)**2)
-                                
-                                if dist < min_dist:
-                                    min_dist = dist
-                                    best_pos = (x_proj, y_proj)
-                            
-                            center_x, center_y = best_pos
+            # 应用资源区域约束（如果启用且有资源区域信息）
+            if self.enable_resource_constraints and self.resource_regions:
+                resource_type = self._get_node_resource_type(i)
+                if resource_type and resource_type in self.resource_regions:
+                    center_x, center_y = self._apply_resource_constraints(
+                        center_x, center_y, half_width, half_height, resource_type)
             
             constrained_positions[i] = (center_x, center_y)
         
         return constrained_positions
     
-    def optimize_placement(self):
-        """
-        执行GiFt优化过程
+    def _get_node_resource_type(self, node_id):
+        """获取节点的资源类型"""
+        placedb = self.placedb
         
-        返回:
-        optimized_positions: 优化后的位置(中心点坐标)
-        """
+        if hasattr(placedb, 'lut_mask') and placedb.lut_mask[node_id]:
+            return 'LUT'
+        elif hasattr(placedb, 'flop_mask') and placedb.flop_mask[node_id]:
+            return 'FF'
+        elif hasattr(placedb, 'dsp_mask') and placedb.dsp_mask[node_id]:
+            return 'DSP'
+        elif hasattr(placedb, 'ram_mask') and placedb.ram_mask[node_id]:
+            return 'RAM'
+        
+        return None
+    
+    def _apply_resource_constraints(self, center_x, center_y, half_width, half_height, resource_type):
+        """应用资源区域约束"""
+        regions = self.resource_regions[resource_type]
+        
+        # 检查是否已在某个区域内
+        for region in regions:
+            if (region[0] + half_width <= center_x <= region[2] - half_width and
+                region[1] + half_height <= center_y <= region[3] - half_height):
+                return center_x, center_y  # 已在区域内，不需要调整
+        
+        # 找到最近的区域并投影
+        min_dist = float('inf')
+        best_pos = (center_x, center_y)
+        
+        for region in regions:
+            x_proj = max(region[0] + half_width, 
+                        min(center_x, region[2] - half_width))
+            y_proj = max(region[1] + half_height, 
+                        min(center_y, region[3] - half_height))
+            
+            dist = np.sqrt((center_x - x_proj)**2 + (center_y - y_proj)**2)
+            
+            if dist < min_dist:
+                min_dist = dist
+                best_pos = (x_proj, y_proj)
+        
+        return best_pos
+    
+    def optimize_placement(self):
+        """执行GiFt优化过程"""
         total_start = time.time()
         
         # 初始化位置
@@ -486,12 +542,7 @@ class GiFtFPGAPlacer:
         return self.optimized_positions
     
     def get_dreamplace_positions(self):
-        """
-        获取DREAMPlace格式的节点位置数组
-        
-        返回:
-        pos: 左下角坐标格式的位置数组，形状为(num_nodes * 2,)
-        """
+        """获取DREAMPlace格式的节点位置数组"""
         if self.optimized_positions is None:
             self.optimize_placement()
         
