@@ -7,7 +7,7 @@
         "command": "/opt/conda/bin/python",
         "args": [
           "/DREAMPlaceFPGA/dreamplacefpga/Placer.py",
-          "/DREAMPlaceFPGA/test/FPGA-example1.json"
+          "/DREAMPlaceFPGA/test/FPGA-example2.json"
         ],
         "group": {
           "kind": "build",

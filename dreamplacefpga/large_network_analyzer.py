@@ -31,19 +31,20 @@ class LargeNetworkAnalyzer:
         """
         self.placedb = placedb
         self.params = params
+        self.export_path = os.path.join(self.params.result_dir, os.path.basename(os.path.dirname(self.params.aux_input)))
         
         # 分析参数设置
         if params:
             self.analysis_threshold = getattr(params, 'net_analysis_threshold', 50)
             self.skip_threshold = getattr(params, 'net_skip_threshold', 200)
             self.enable_detailed_export = getattr(params, 'net_analysis_export_detailed', True)
-            self.export_path = getattr(params, 'net_analysis_export_path', '.')
+
         else:
             # 默认参数
             self.analysis_threshold = 50
             self.skip_threshold = 200
             self.enable_detailed_export = True
-            self.export_path = '.'
+            
         
         logging.info(f"网络分析器初始化 - 分析阈值: {self.analysis_threshold}, 跳过阈值: {self.skip_threshold}")
     
