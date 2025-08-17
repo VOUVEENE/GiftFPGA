@@ -14,7 +14,7 @@
     ],
     "target_density": 1.0,
     "density_weight": 8e-05,
-    "random_seed": 1003,
+    "random_seed": 1007,
     "scale_factor": 1.0,
     "global_place_flag": 1,
     "legalize_flag": 0,
@@ -22,7 +22,7 @@
     "dtype": "float32",
     "deterministic_flag": 0,
     "use_custom_init_place": 0,
-    "use_gift_init_place": 1,
+    "use_gift_init_place": 0,
     "gift_alpha0": 0.1,
     "gift_alpha1": 0.7,
     "gift_alpha2": 0.2,
@@ -36,6 +36,7 @@
     "net_skip_threshold": 200,
     "net_analysis_export_detailed": true,
     "net_analysis_export_path": "./network_analysis_reports",
+    "result_dir": "results_no_gift",
     "_comment_gift_optimization": "=== GiFt优化相关参数 ===",
     "gift_max_net_size": 1000,
     "gift_use_star_model": true,
@@ -43,5 +44,5 @@
     "gift_sigma_2": 2,
     "gift_sigma_4": 4,
     "part_name": "xcvu095-ffva2104-2-e",
-    "aux_input": "benchmarks/sample_ispd2016_benchmarks/FPGA03/design.aux"
+    "aux_input": "benchmarks/sample_ispd2016_benchmarks/FPGA07/design.aux"
 }

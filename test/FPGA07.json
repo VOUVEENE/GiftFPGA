@@ -14,7 +14,7 @@
     ],
     "target_density": 1.0,
     "density_weight": 8e-05,
-    "random_seed": 1003,
+    "random_seed": 1007,
     "scale_factor": 1.0,
     "global_place_flag": 1,
     "legalize_flag": 0,
@@ -43,5 +43,5 @@
     "gift_sigma_2": 2,
     "gift_sigma_4": 4,
     "part_name": "xcvu095-ffva2104-2-e",
-    "aux_input": "benchmarks/sample_ispd2016_benchmarks/FPGA03/design.aux"
+    "aux_input": "benchmarks/sample_ispd2016_benchmarks/FPGA07/design.aux"
 }
