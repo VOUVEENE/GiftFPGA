@@ -57,7 +57,7 @@ def placeFPGA(params):
     path = "%s/%s" % (params.result_dir, params.design_name())
     if not os.path.exists(path):
         os.system("mkdir -p %s" % (path))
-    if params.global_place_flag and params.legalize_flag == 0: ##Only global placement is run
+    if params.global_place_flag and params.legalize_flag: # Run both global placement and detailed placement
         gp_out_file = os.path.join(path, "%s.gp.pl" % (params.design_name()))
         placedb.write(params, gp_out_file)
         
@@ -75,7 +75,7 @@ def placeFPGA(params):
         else:
             logging.warning("External legalization & detailed placement engine NOT found at thirdparty/elfPlace_LG_DP")
 
-    elif params.legalize_flag: ## Run both global placement and detailed placement
+    elif not params.legalize_flag: #Only global placement is run
         final_out_file = os.path.join(path, "%s.final.%s" % (params.design_name(), params.solution_file_suffix()))
         placedb.writeFinalSolution(params, final_out_file)
         logging.info("Detailed Placement not run")

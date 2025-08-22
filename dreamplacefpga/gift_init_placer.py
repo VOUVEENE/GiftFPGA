@@ -6,6 +6,7 @@ from collections import defaultdict
 import time
 import os
 import logging
+from placement_utils import PlacementUtils
 
 # 导入独立的网络分析器
 try:
@@ -110,6 +111,15 @@ class GiFtFPGAPlacer:
         logging.info(f"GiFt优化版本初始化完成 - 边界约束: {'启用' if self.enable_boundary_constraints else '禁用'}, "
                     f"资源约束: {'启用' if self.enable_resource_constraints else '禁用'}, "
                     f"网络分析: {'启用' if self.enable_network_analysis else '禁用'}")
+
+    def set_preset_center(self, center_x, center_y):
+        """
+        @brief 设置预设的中心位置，避免重复计算
+        @param center_x 中心X坐标
+        @param center_y 中心Y坐标
+        """
+        self._preset_center = (center_x, center_y)
+        logging.info(f"GiFt使用预设中心位置: ({center_x:.2f}, {center_y:.2f})")
     
     def import_resource_regions(self):
         """从placedb导入资源区域信息"""
@@ -129,36 +139,6 @@ class GiFtFPGAPlacer:
                         self.resource_regions[resource_type].append(region)
                     
                     logging.info(f"导入资源区域 - {resource_type}: {len(regions)}个区域")
-    
-    def calculate_initial_center(self):
-        """计算初始中心位置，与BasicPlace方法相同"""
-        placedb = self.placedb
-        
-        numPins = 0
-        initLocX = 0
-        initLocY = 0
-        
-        if placedb.num_terminals > 0:
-            numPins = 0
-            # 使用固定引脚位置的平均值作为初始位置
-            for nodeID in range(placedb.num_movable_nodes, placedb.num_physical_nodes):
-                if hasattr(placedb, 'node2pin_map') and nodeID < len(placedb.node2pin_map):
-                    for pID in placedb.node2pin_map[nodeID]:
-                        initLocX += placedb.node_x[nodeID] + placedb.pin_offset_x[pID]
-                        initLocY += placedb.node_y[nodeID] + placedb.pin_offset_y[pID]
-                    numPins += len(placedb.node2pin_map[nodeID])
-            
-            if numPins > 0:
-                initLocX /= numPins
-                initLocY /= numPins
-            else:
-                initLocX = 0.5 * (placedb.xh - placedb.xl)
-                initLocY = 0.5 * (placedb.yh - placedb.yl)
-        else:  # 设计没有IO引脚 - 放置在中心
-            initLocX = 0.5 * (placedb.xh - placedb.xl)
-            initLocY = 0.5 * (placedb.yh - placedb.yl)
-        
-        return initLocX, initLocY
     
     def build_adjacency_matrix(self):
         """构建邻接矩阵 - 集成网络分析功能"""
@@ -363,13 +343,19 @@ class GiFtFPGAPlacer:
         return result
     
     def initialize_positions(self):
-        """初始化节点位置"""
+        """初始化节点位置 - 使用统一的工具方法"""
         logging.info("初始化节点位置...")
         placedb = self.placedb
         n = placedb.num_physical_nodes
         
-        # 获取初始中心位置
-        initLocX, initLocY = self.calculate_initial_center()
+        # 检查是否有预设的中心位置
+        if hasattr(self, '_preset_center'):
+            initLocX, initLocY = self._preset_center
+            logging.info(f"使用预设中心位置: ({initLocX:.2f}, {initLocY:.2f})")
+        else:
+            # 如果没有预设，使用统一的工具方法计算
+            initLocX, initLocY = PlacementUtils.calculate_initial_center(placedb)
+            logging.info(f"GiFt独立计算中心位置: ({initLocX:.2f}, {initLocY:.2f})")
         
         # 创建初始位置数组
         initial_positions = np.zeros((n, 2), dtype=np.float32)
@@ -387,15 +373,11 @@ class GiFtFPGAPlacer:
             
             # 应用边界约束（如果启用）
             if self.enable_boundary_constraints:
-                half_width = placedb.node_size_x[i] / 2
-                half_height = placedb.node_size_y[i] / 2
-                
-                initial_positions[i, 0] = max(placedb.xl + half_width, 
-                                          min(initial_positions[i, 0], 
-                                              placedb.xh - half_width))
-                initial_positions[i, 1] = max(placedb.yl + half_height, 
-                                          min(initial_positions[i, 1], 
-                                              placedb.yh - half_height))
+                initial_positions[i, 0], initial_positions[i, 1] = PlacementUtils.apply_boundary_constraints(
+                    initial_positions[i, 0], initial_positions[i, 1],
+                    placedb.node_size_x[i], placedb.node_size_y[i],
+                    placedb.xl, placedb.yl, placedb.xh, placedb.yh
+                )
         
         self.initial_positions = initial_positions
         return initial_positions

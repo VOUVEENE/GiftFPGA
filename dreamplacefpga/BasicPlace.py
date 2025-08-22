@@ -31,6 +31,7 @@ import dreamplacefpga.ops.lut_ff_legalization.lut_ff_legalization as lut_ff_lega
 import dreamplacefpga.ops.timing.timing as timing
 import pdb
 from gift_init_placer import GiFtFPGAPlacer
+from placement_utils import PlacementUtils
 
 datatypes = {
         'float32' : torch.float32, 
@@ -250,73 +251,45 @@ class BasicPlaceFPGA(nn.Module):
             torch.cuda.manual_seed(manualSeed)
             torch.cuda.manual_seed_all(manualSeed)
 
-        numPins = 0
-        initLocX = 0
-        initLocY = 0
-
-        if placedb.num_terminals > 0:
-            numPins = 0
-            ##Use the average fixed pin location (weighted by pin count) as the initial location
-            for nodeID in range(placedb.num_movable_nodes,placedb.num_physical_nodes):
-                for pID in placedb.node2pin_map[nodeID]:
-                    initLocX += placedb.node_x[nodeID] + placedb.pin_offset_x[pID]
-                    initLocY += placedb.node_y[nodeID] + placedb.pin_offset_y[pID]
-                numPins += len(placedb.node2pin_map[nodeID])
-            initLocX /= numPins
-            initLocY /= numPins
-        else: ##Design does not have IO pins - place in center
-            initLocX = 0.5 * (placedb.xh - placedb.xl)
-            initLocY = 0.5 * (placedb.yh - placedb.yl)
-
-
+        # 计算初始中心位置 - 使用统一的工具方法
+        initLocX, initLocY = PlacementUtils.calculate_initial_center(placedb)
+        
         # 首先设置默认位置
-        # x position
         self.init_pos[0:placedb.num_physical_nodes] = placedb.node_x
-        # y position
         self.init_pos[placedb.num_nodes:placedb.num_nodes+placedb.num_physical_nodes] = placedb.node_y
 
-        # 在这里添加自定义初始位置加载的代码
-        # 检查是否启用自定义初始位置
-
+        # 检查初始化策略
         custom_init_applied = False
+        gift_init_applied = False
+        
+        # 1. 尝试自定义初始位置
         if hasattr(params, 'use_custom_init_place') and params.use_custom_init_place:
-            # 使用设计文件的路径
             design_dir = os.path.dirname(params.aux_input)
             design_name = os.path.basename(params.aux_input).replace(".aux", "")
             custom_file = os.path.join(design_dir, "custom_" + design_name + ".pl")
             
-            # 尝试加载自定义文件
             if os.path.exists(custom_file):
                 custom_init_applied = self.load_custom_placement(custom_file, placedb)
             else:
-                logging.warning("Custom initial placement enabled but file not found: %s" % custom_file)        
+                logging.warning("Custom initial placement enabled but file not found: %s" % custom_file)
         
-        gift_init_applied = False
+        # 2. 尝试GiFt初始化（传递已计算的中心位置）
         if not custom_init_applied and hasattr(params, 'use_gift_init_place') and params.use_gift_init_place:
-            gift_init_applied = self.initialize_gift_placement(placedb, params)
-
-        # 修改下面的条件，考虑gift_init_applied
+            gift_init_applied = self.initialize_gift_placement(placedb, params, initLocX, initLocY)
+        
+        # 3. 默认随机初始化
         if not custom_init_applied and not gift_init_applied and params.global_place_flag and params.random_center_init_flag:
-            # 原有的随机初始化代码
+            # 应用随机初始化
+            scale = min(placedb.xh - placedb.xl, placedb.yh - placedb.yl) * 0.001
+            
             self.init_pos[0:placedb.num_movable_nodes] = np.random.normal(
-                loc = initLocX,
-                scale = min(placedb.xh - placedb.xl, placedb.yh - placedb.yl) * 0.001,
-                size = placedb.num_movable_nodes)
-
-        # 只有在没有应用自定义初始位置和GiFt初始化时才应用左下角偏移
+                loc=initLocX, scale=scale, size=placedb.num_movable_nodes)
+            self.init_pos[placedb.num_nodes:placedb.num_nodes+placedb.num_movable_nodes] = np.random.normal(
+                loc=initLocY, scale=scale, size=placedb.num_movable_nodes)
+        
+        # 只有在非自定义和非GiFt初始化时才应用左下角偏移
         if not custom_init_applied and not gift_init_applied:
             self.init_pos[0:placedb.num_movable_nodes] -= (0.5 * placedb.node_size_x[0:placedb.num_movable_nodes])
-
-        # 修改y坐标初始化条件
-        if not custom_init_applied and not gift_init_applied and params.global_place_flag and params.random_center_init_flag:
-            # 原有的随机初始化代码
-            self.init_pos[placedb.num_nodes:placedb.num_nodes+placedb.num_movable_nodes] = np.random.normal(
-                loc = initLocY,
-                scale = min(placedb.xh - placedb.xl, placedb.yh - placedb.yl) * 0.001,
-                size = placedb.num_movable_nodes)
-
-        # 只有在没有应用自定义初始位置和GiFt初始化时才应用左下角偏移
-        if not custom_init_applied and not gift_init_applied:
             self.init_pos[placedb.num_nodes:placedb.num_nodes+placedb.num_movable_nodes] -= (0.5 * placedb.node_size_y[0:placedb.num_movable_nodes])
 
         # #logging.info("Random Init Place in python takes %.2f seconds" % (time.time() - tt))
@@ -773,23 +746,19 @@ class BasicPlaceFPGA(nn.Module):
             logging.error("Failed to load custom initial placement: %s" % (str(e)))
             return False
     
-    def initialize_gift_placement(self, placedb, params):
-        """GiFt初始化方法 - 集成网络分析"""
+    def initialize_gift_placement(self, placedb, params, initLocX=None, initLocY=None):
+        """
+        @brief GiFt初始化方法 - 接受预计算的中心位置
+        """
         try:
             logging.info("使用GiFt（图信号处理）算法优化初始布局...")
             
-            # 检查网络分析器可用性
-            enable_analysis = getattr(params, 'enable_network_analysis', False)
-            if enable_analysis:
-                try:
-                    from large_network_analyzer import LargeNetworkAnalyzer
-                    logging.info("网络分析器模块可用")
-                except ImportError:
-                    logging.warning("网络分析器模块未找到，将禁用网络分析功能")
-                    params.enable_network_analysis = False
-            
-            # 创建GiFt布局器实例（已集成网络分析功能）
+            # 创建GiFt布局器实例
             gift_placer = GiFtFPGAPlacer(placedb, params)
+            
+            # 如果传递了中心位置，设置到GiFt布局器中避免重复计算
+            if initLocX is not None and initLocY is not None:
+                gift_placer.set_preset_center(initLocX, initLocY)
             
             # 执行优化并获取位置
             gift_positions = gift_placer.get_dreamplace_positions()
@@ -797,16 +766,13 @@ class BasicPlaceFPGA(nn.Module):
             # 将优化结果应用到初始位置
             self.init_pos = gift_positions
             
-            # 保存可视化结果
+            # 保存可视化结果（如果需要）
             if hasattr(params, 'plot_flag') and params.plot_flag:
                 try:
                     design_dir = os.path.dirname(params.aux_input)
                     design_name = os.path.basename(design_dir)
-                    
-                    # 确保结果目录存在
                     result_path = os.path.join(params.result_dir, design_name)
                     os.makedirs(result_path, exist_ok=True)
-                    
                     output_file = os.path.join(result_path, f"{design_name}_gift_init.png")
                     gift_placer.visualize_placement(output_file)
                 except Exception as e:
