@@ -243,13 +243,12 @@ class BasicPlaceFPGA(nn.Module):
 
         self.init_pos = np.zeros(placedb.num_nodes * 2, dtype=placedb.dtype)
 
-        ##Settings to ensure reproduciblity
-        manualSeed = 0
-        np.random.seed(manualSeed)
-        torch.manual_seed(manualSeed)
+        ##Settings to ensure reproduciblity - use params.random_seed consistently
+        np.random.seed(params.random_seed)
+        torch.manual_seed(params.random_seed)
         if params.gpu:
-            torch.cuda.manual_seed(manualSeed)
-            torch.cuda.manual_seed_all(manualSeed)
+            torch.cuda.manual_seed_all(params.random_seed)
+            torch.cuda.manual_seed(params.random_seed)
 
         # 计算初始中心位置 - 使用统一的工具方法
         initLocX, initLocY = PlacementUtils.calculate_initial_center(placedb)

@@ -365,11 +365,15 @@ class GiFtFPGAPlacer:
             initial_positions[i, 0] = placedb.node_x[i] + placedb.node_size_x[i] / 2
             initial_positions[i, 1] = placedb.node_y[i] + placedb.node_size_y[i] / 2
         
-        # 为可移动节点设置初始位置（围绕初始中心点随机分布）
         scale = min(placedb.xh - placedb.xl, placedb.yh - placedb.yl) * 0.001
+
+        # 使用与BasicPlace一致的随机种子
+        random_seed = getattr(self.params, 'random_seed', 0)
+        random_gen = PlacementUtils.create_random_generator(random_seed)
+
         for i in range(placedb.num_movable_nodes):
-            initial_positions[i, 0] = initLocX + np.random.normal(0, scale)
-            initial_positions[i, 1] = initLocY + np.random.normal(0, scale)
+            initial_positions[i, 0] = initLocX + random_gen.normal(0, scale)
+            initial_positions[i, 1] = initLocY + random_gen.normal(0, scale)
             
             # 应用边界约束（如果启用）
             if self.enable_boundary_constraints:

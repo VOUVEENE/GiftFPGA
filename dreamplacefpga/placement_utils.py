@@ -4,12 +4,46 @@
 #
 
 import numpy as np
+import torch
 import logging
 
 class PlacementUtils:
     """
     @brief 布局相关的工具函数集合
     """
+    
+    @staticmethod
+    def set_global_seed(seed, gpu=False):
+        """
+        @brief 设置全局随机种子，确保可重现性
+        @param seed 随机种子
+        @param gpu 是否使用GPU
+        """
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        
+        if gpu and torch.cuda.is_available():
+            torch.cuda.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
+            
+            # 设置cuDNN确定性行为
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cudnn.enabled = False
+        
+        logging.info(f"设置全局随机种子: {seed}")
+    
+    @staticmethod
+    def create_random_generator(seed=None):
+        """
+        @brief 创建独立的随机数生成器
+        @param seed 种子值，如果为None则使用全局状态
+        @return numpy随机数生成器
+        """
+        if seed is not None:
+            return np.random.RandomState(seed)
+        else:
+            return np.random
     
     @staticmethod
     def calculate_initial_center(placedb):
@@ -61,3 +95,21 @@ class PlacementUtils:
         constrained_y = max(yl + half_height, min(y, yh - half_height))
         
         return constrained_x, constrained_y
+    
+    @staticmethod
+    def generate_random_positions(center_x, center_y, scale, num_nodes, random_gen=None):
+        """
+        @brief 生成随机位置
+        @param center_x, center_y 中心位置
+        @param scale 随机分布的标准差
+        @param num_nodes 节点数量
+        @param random_gen 随机数生成器
+        @return x_positions, y_positions
+        """
+        if random_gen is None:
+            random_gen = np.random
+        
+        x_positions = random_gen.normal(center_x, scale, num_nodes)
+        y_positions = random_gen.normal(center_y, scale, num_nodes)
+        
+        return x_positions, y_positions
