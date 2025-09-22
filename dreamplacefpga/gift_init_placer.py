@@ -1,4 +1,4 @@
-# gift_init_placer.py - 计时优化版本
+# gift_init_placer.py - 保守加速 + HPWL开关版本
 import numpy as np
 import scipy.sparse as sp
 from scipy.sparse import csc_matrix, diags, identity
@@ -38,14 +38,22 @@ except ImportError:
     logger.warning("C++扩展未找到，将使用Python实现")
 
 class GiFtGPUFilter:
-    """GPU加速的GiFt滤波器（含计时）"""
+    """GPU加速的GiFt滤波器（含计时与按σ缓存）"""
     def __init__(self, adj_mat, device):
         self.adj_mat = adj_mat
         self.device = device
         self.norm_adj = None
+        # 按 σ 缓存：相同 σ 复用归一化邻接与 Torch 稀疏矩阵
+        self._norm_cache = {}     # sigma -> scipy sparse (normalized A)
+        self._torch_cache = {}    # sigma -> torch sparse tensor
 
     def train(self, sigma):
-        """计算归一化邻接矩阵 D^(-0.5)(A+σI)D^(-0.5)"""
+        """计算归一化邻接矩阵 D^(-0.5)(A+σI)D^(-0.5)（复用缓存）"""
+        if sigma in self._norm_cache:
+            self.norm_adj = self._norm_cache[sigma]
+            logger.info(f"[缓存复用] norm_adj(σ={sigma})")
+            return
+
         t0 = tic()
         adj_mat = csc_matrix(self.adj_mat)
         dim = adj_mat.shape[0]
@@ -58,12 +66,13 @@ class GiFtGPUFilter:
 
         norm_adj = d_mat.dot(adj_mat).dot(d_mat)
         self.norm_adj = norm_adj
+        self._norm_cache[sigma] = norm_adj
         toc(t0, f"GPUFilter.train(σ={sigma}) 归一化矩阵构建")
 
-    def get_cell_position(self, k, cell_pos):
-        """GPU上执行k次稀疏矩阵乘法"""
+    def _get_torch_sparse(self, sigma):
+        if sigma in self._torch_cache:
+            return self._torch_cache[sigma]
         assert self.norm_adj is not None, "请先调用 train() 生成归一化邻接矩阵"
-        t0 = tic()
 
         trainAdj = self.norm_adj.tocoo()
         edge_index = np.vstack((trainAdj.row, trainAdj.col)).transpose()
@@ -73,6 +82,13 @@ class GiFtGPUFilter:
         build_torch_t = tic()
         norm_adj_torch = torch.sparse.FloatTensor(edge_index, edge_weight).to(self.device)
         toc(build_torch_t, "GPUFilter 构建 Torch 稀疏矩阵")
+
+        self._torch_cache[sigma] = norm_adj_torch
+        return norm_adj_torch
+
+    def get_cell_position(self, k, cell_pos, sigma):
+        """GPU上执行k次稀疏矩阵乘法（按σ复用Torch稀疏矩阵）"""
+        norm_adj_torch = self._get_torch_sparse(sigma)
 
         mm_total_t = tic()
         for _ in range(k):
@@ -84,13 +100,12 @@ class GiFtGPUFilter:
         if cell_pos.is_cuda:
             torch.cuda.empty_cache()
 
-        toc(t0, f"GPUFilter.get_cell_position(k={k}) 总计")
         return cell_pos
 
 
 class GiFtFPGAPlacer:
     """
-    基于图信号处理的FPGA布局加速器 - 计时优化版本
+    基于图信号处理的FPGA布局加速器 - 保守加速 + HPWL开关
     """
     def __init__(self, placedb, params):
         self.placedb = placedb
@@ -106,6 +121,11 @@ class GiFtFPGAPlacer:
         self.enable_boundary_constraints = getattr(params, 'gift_enable_boundary_constraints', True)
         self.enable_resource_constraints = getattr(params, 'gift_enable_resource_constraints', True)
 
+        # HPWL 开关与后端
+        self.enable_hpwl = getattr(params, 'gift_enable_hpwl', True)
+        # "naive" 完全保留你现有逐网循环实现；"numpy" 启用可选的NumPy向量化
+        self.hpwl_backend = getattr(params, 'gift_hpwl_backend', 'naive').lower()
+
         # 布局边界
         self.xl, self.yl = placedb.xl, placedb.yl
         self.xh, self.yh = placedb.xh, placedb.yh
@@ -119,7 +139,11 @@ class GiFtFPGAPlacer:
         self.resource_regions = {}
         timed_step("导入资源区域", self.import_resource_regions)
 
-        logger.info(f"GiFt优化版本初始化完成，使用设备: {self.device}, C++: {'启用' if CPP_AVAILABLE else '禁用'}")
+        logger.info(
+            f"GiFt优化版本初始化完成，使用设备: {self.device}, "
+            f"C++: {'启用' if CPP_AVAILABLE else '禁用'}, "
+            f"HPWL(enable={self.enable_hpwl}, backend={self.hpwl_backend})"
+        )
 
     def import_resource_regions(self):
         placedb = self.placedb
@@ -281,9 +305,16 @@ class GiFtFPGAPlacer:
         if self.adjacency_matrix is None:
             self.build_adjacency_matrix()
 
-        # numpy -> torch
+        # numpy -> torch（CUDA时使用pinned memory + non_blocking）
         t_to_torch = tic()
-        random_initial = torch.from_numpy(initial_positions).float().to(self.device)
+        random_initial = torch.from_numpy(initial_positions).float()
+        if self.device.type == 'cuda':
+            try:
+                random_initial = random_initial.pin_memory().to(self.device, non_blocking=True)
+            except Exception:
+                random_initial = random_initial.to(self.device)
+        else:
+            random_initial = random_initial.to(self.device)
         toc(t_to_torch, "初始位置 转换为 Torch 张量")
 
         gpu_filter = GiFtGPUFilter(self.adjacency_matrix, self.device)
@@ -291,19 +322,19 @@ class GiFtFPGAPlacer:
         # 低通：σ=4, k=4
         t_low = tic()
         gpu_filter.train(4)
-        location_low = gpu_filter.get_cell_position(4, random_initial)
+        location_low = gpu_filter.get_cell_position(4, random_initial, sigma=4)
         toc(t_low, "低通滤波 (σ=4, k=4)")
 
-        # 中通：σ=4, k=2
+        # 中通：σ=4, k=2（复用σ=4）
         t_mid = tic()
         gpu_filter.train(4)
-        location_m = gpu_filter.get_cell_position(2, random_initial)
+        location_m = gpu_filter.get_cell_position(2, random_initial, sigma=4)
         toc(t_mid, "中通滤波 (σ=4, k=2)")
 
         # 高通：σ=2, k=2
         t_high = tic()
         gpu_filter.train(2)
-        location_h = gpu_filter.get_cell_position(2, random_initial)
+        location_h = gpu_filter.get_cell_position(2, random_initial, sigma=2)
         toc(t_high, "高通滤波 (σ=2, k=2)")
 
         # 组合
@@ -399,19 +430,27 @@ class GiFtFPGAPlacer:
         self.optimized_positions = timed_step("应用布局约束(apply_placement_constraints)",
                                              self.apply_placement_constraints, self.optimized_positions)
 
-        # 计算HPWL
-        initial_wl = timed_step("初始HPWL计算(calculate_hpwl)", self.calculate_hpwl, self.initial_positions)
-        optimized_wl = timed_step("优化后HPWL计算(calculate_hpwl)", self.calculate_hpwl, self.optimized_positions)
+        # HPWL（可开关 + 可选后端）
+        if self.enable_hpwl:
+            if self.hpwl_backend == 'numpy':
+                initial_wl = timed_step("初始HPWL计算(calculate_hpwl_numpy)", self.calculate_hpwl_numpy, self.initial_positions)
+                optimized_wl = timed_step("优化后HPWL计算(calculate_hpwl_numpy)", self.calculate_hpwl_numpy, self.optimized_positions)
+            else:  # 'naive' 默认保持原实现
+                initial_wl = timed_step("初始HPWL计算(calculate_hpwl)", self.calculate_hpwl, self.initial_positions)
+                optimized_wl = timed_step("优化后HPWL计算(calculate_hpwl)", self.calculate_hpwl, self.optimized_positions)
 
-        total_time = time.time() - total_start
-        logger.info(f"GiFt优化完成，总耗时: {total_time:.3f}s")
-        logger.info(f"初始HPWL: {initial_wl:.2f}，优化后HPWL: {optimized_wl:.2f}")
-        if optimized_wl < initial_wl:
-            improvement = (initial_wl - optimized_wl) / initial_wl * 100
-            logger.info(f"GiFt优化有效，HPWL减少了 {improvement:.2f}%")
+            total_time = time.time() - total_start
+            logger.info(f"GiFt优化完成，总耗时: {total_time:.3f}s")
+            logger.info(f"初始HPWL: {initial_wl:.2f}，优化后HPWL: {optimized_wl:.2f}")
+            if optimized_wl < initial_wl:
+                improvement = (initial_wl - optimized_wl) / initial_wl * 100
+                logger.info(f"GiFt优化有效，HPWL减少了 {improvement:.2f}%")
+            else:
+                degradation = (optimized_wl - initial_wl) / initial_wl * 100
+                logger.warning(f"GiFt优化后HPWL增加了 {degradation:.2f}%")
         else:
-            degradation = (optimized_wl - initial_wl) / initial_wl * 100
-            logger.warning(f"GiFt优化后HPWL增加了 {degradation:.2f}%")
+            total_time = time.time() - total_start
+            logger.info(f"GiFt优化完成（跳过HPWL），总耗时: {total_time:.3f}s")
 
         return self.optimized_positions
 
@@ -436,7 +475,7 @@ class GiFtFPGAPlacer:
 
         return pos
 
-    # ====== HPWL ======
+    # ====== HPWL（原版：逐网循环，结果与旧版完全一致） ======
     def calculate_hpwl(self, positions):
         t0 = tic()
         placedb = self.placedb
@@ -476,6 +515,56 @@ class GiFtFPGAPlacer:
 
         toc(t0, "calculate_hpwl")
         return total_wl
+
+    # ====== HPWL（可选：NumPy分段向量化版，保持与原逻辑一致的条件判断） ======
+    def calculate_hpwl_numpy(self, positions):
+        """
+        更快的 NumPy 实现，保持“每网至少两个pin，且 x/y 范围都 > 0 才计入”的逻辑。
+        """
+        t0 = tic()
+        placedb = self.placedb
+
+        # 展开到引脚级
+        flat_pin = placedb.flat_net2pin_map
+        pin2node = placedb.pin2node_map
+        node_id = pin2node[flat_pin]  # 长度 = 总pins
+        # 取中心坐标（按pin映射）
+        cx = positions[node_id, 0]
+        cy = positions[node_id, 1]
+        # 尺寸、偏移（按pin映射）
+        sx = placedb.node_size_x[node_id]
+        sy = placedb.node_size_y[node_id]
+        ox = placedb.pin_offset_x[flat_pin]
+        oy = placedb.pin_offset_y[flat_pin]
+
+        px = cx + ox - 0.5 * sx
+        py = cy + oy - 0.5 * sy
+
+        starts = placedb.flat_net2pin_start_map
+        counts = starts[1:] - starts[:-1]
+        valid = counts >= 2
+        if not np.any(valid):
+            toc(t0, "calculate_hpwl_numpy")
+            return 0.0
+
+        # 仅对有效段做 reduceat
+        s = starts[:-1][valid]
+        e = starts[1:][valid]
+
+        xmin = np.minimum.reduceat(px, s)
+        xmax = np.maximum.reduceat(px, s)
+        ymin = np.minimum.reduceat(py, s)
+        ymax = np.maximum.reduceat(py, s)
+
+        # 按原逻辑：仅当 x_max > x_min 且 y_max > y_min 才计入
+        rx = xmax - xmin
+        ry = ymax - ymin
+        positive = (rx > 0) & (ry > 0)
+        hpwl = (rx + ry) * positive
+
+        total = float(hpwl.sum())
+        toc(t0, "calculate_hpwl_numpy")
+        return total
 
     # ====== 可视化 ======
     def visualize_placement(self, output_file=None, show_nets=False):
