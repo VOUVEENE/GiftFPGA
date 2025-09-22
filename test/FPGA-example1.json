@@ -26,6 +26,7 @@
     "deterministic_flag": 0,
     "use_custom_init_place": 0,
     "use_gift_init_place": 1,
+    "gift_scale": 0.7,
     "gift_alpha0": 0.1,
     "gift_alpha1": 0.7,
     "gift_alpha2": 0.2,
