@@ -1,7 +1,7 @@
 {
 "aux_input" : "benchmarks/sample_ispd2016_benchmarks/FPGA-example1/design.aux",
 "gpu" : 1,
-"num_threads" : 1,
+"num_threads" : 8,
 "num_bins_x" : 512,
 "num_bins_y" : 512,
 "global_place_stages" : [

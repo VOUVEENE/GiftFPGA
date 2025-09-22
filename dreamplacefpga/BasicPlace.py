@@ -759,23 +759,54 @@ class BasicPlaceFPGA(nn.Module):
             if initLocX is not None and initLocY is not None:
                 gift_placer.set_preset_center(initLocX, initLocY)
             
-            # 执行优化并获取位置
+            # 初始化位置（GiFt的初始随机位置）
+            initial_positions = gift_placer.initialize_positions()
+            
+            # 可视化GiFt的初始位置（如果需要）
+            if hasattr(params, 'plot_flag') and params.plot_flag:
+                try:
+                    import os
+                    design_dir = os.path.dirname(params.aux_input)
+                    design_name = os.path.basename(design_dir)
+                    result_path = os.path.join(params.result_dir, design_name)
+                    os.makedirs(result_path, exist_ok=True)
+                    
+                    # 绘制GiFt初始位置（优化前）
+                    initial_output_file = os.path.join(result_path, f"{design_name}_gift_initial.png")
+                    gift_placer.visualize_placement_with_positions(
+                        initial_positions, 
+                        initial_output_file,
+                        title="GiFt Initial Random Positions"
+                    )
+                    logging.info(f"GiFt初始位置图已保存: {initial_output_file}")
+                    
+                except Exception as e:
+                    logging.warning(f"GiFt初始位置可视化失败: {e}")
+            
+            # 执行GiFt优化
+            logging.info("开始执行GiFt优化...")
+            optimized_positions = gift_placer.optimize_placement()
+            
+            # 检查优化结果
+            if optimized_positions is None:
+                logging.error("GiFt优化失败，返回None")
+                return False
+            
+            # 获取DreamPlace格式的位置
             gift_positions = gift_placer.get_dreamplace_positions()
             
             # 将优化结果应用到初始位置
             self.init_pos = gift_positions
             
-            # 保存可视化结果（如果需要）
+            # 保存GiFt优化后的可视化结果（如果需要）
             if hasattr(params, 'plot_flag') and params.plot_flag:
                 try:
-                    design_dir = os.path.dirname(params.aux_input)
-                    design_name = os.path.basename(design_dir)
-                    result_path = os.path.join(params.result_dir, design_name)
-                    os.makedirs(result_path, exist_ok=True)
-                    output_file = os.path.join(result_path, f"{design_name}_gift_init.png")
-                    gift_placer.visualize_placement(output_file)
+                    # 绘制GiFt优化后位置
+                    final_output_file = os.path.join(result_path, f"{design_name}_gift_optimized.png")
+                    gift_placer.visualize_placement(final_output_file)
+                    logging.info(f"GiFt优化后位置图已保存: {final_output_file}")
                 except Exception as e:
-                    logging.warning(f"可视化保存失败: {e}")
+                    logging.warning(f"GiFt优化后可视化保存失败: {e}")
             
             logging.info("GiFt初始化成功应用")
             return True

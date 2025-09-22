@@ -608,22 +608,44 @@ class GiFtFPGAPlacer:
         return total_wl
     
     def visualize_placement(self, output_file=None, show_nets=False):
-        """可视化布局结果"""
+        """
+        @brief 可视化当前优化后的布局结果 - 重构版本
+        """
         if self.optimized_positions is None:
-            self.optimize_placement()
+            logging.warning("没有优化位置数据，无法进行可视化")
+            return
         
+        # 调用统一的可视化方法
+        self.visualize_placement_with_positions(
+            self.optimized_positions, 
+            output_file, 
+            title="GiFt Placement Result", 
+            show_nets=show_nets
+        )
+
+    def visualize_placement_with_positions(self, positions, output_file=None, title="GiFt Placement", show_nets=False):
+        """
+        @brief 统一的可视化方法 - 支持任意位置数组
+        @param positions 要可视化的位置数组 (N, 2)
+        @param output_file 输出文件路径
+        @param title 图标题
+        @param show_nets 是否显示网络连线
+        """
+        if positions is None:
+            logging.warning("位置数组为空，无法进行可视化")
+            return
+
         placedb = self.placedb
-        positions = self.optimized_positions
         
         plt.figure(figsize=(12, 10))
         
         # 绘制芯片边界
         plt.plot([placedb.xl, placedb.xh, placedb.xh, placedb.xl, placedb.xl], 
-                 [placedb.yl, placedb.yl, placedb.yh, placedb.yh, placedb.yl], 
-                 'k-', linewidth=2, label='chip boundary')
+                [placedb.yl, placedb.yl, placedb.yh, placedb.yh, placedb.yl], 
+                'k-', linewidth=2, label='chip boundary')
         
         # 绘制资源区域
-        if self.enable_resource_constraints:
+        if self.enable_resource_constraints and self.resource_regions:
             colors = {'LUT': 'blue', 'FF': 'green', 'DSP': 'purple', 'RAM': 'orange'}
             for resource_type, regions in self.resource_regions.items():
                 color = colors.get(resource_type, 'gray')
@@ -631,8 +653,8 @@ class GiFtFPGAPlacer:
                     x_min, y_min, x_max, y_max = region
                     label = f'{resource_type} region' if j == 0 else None
                     plt.plot([x_min, x_max, x_max, x_min, x_min], 
-                             [y_min, y_min, y_max, y_max, y_min], 
-                             '--', color=color, linewidth=1, alpha=0.7, label=label)
+                            [y_min, y_min, y_max, y_max, y_min], 
+                            '--', color=color, linewidth=1, alpha=0.7, label=label)
         
         # 准备绘制不同类型的节点
         lut_x, lut_y = [], []
@@ -642,22 +664,22 @@ class GiFtFPGAPlacer:
         io_x, io_y = [], []
         
         # 分类节点
-        for i in range(placedb.num_physical_nodes):
+        for i in range(min(placedb.num_physical_nodes, len(positions))):
             x, y = positions[i]
             
             if i >= placedb.num_movable_nodes:
                 io_x.append(x)
                 io_y.append(y)
-            elif placedb.lut_mask[i]:
+            elif hasattr(placedb, 'lut_mask') and placedb.lut_mask[i]:
                 lut_x.append(x)
                 lut_y.append(y)
-            elif placedb.flop_mask[i]:
+            elif hasattr(placedb, 'flop_mask') and placedb.flop_mask[i]:
                 ff_x.append(x)
                 ff_y.append(y)
-            elif placedb.dsp_mask[i]:
+            elif hasattr(placedb, 'dsp_mask') and placedb.dsp_mask[i]:
                 dsp_x.append(x)
                 dsp_y.append(y)
-            elif placedb.ram_mask[i]:
+            elif hasattr(placedb, 'ram_mask') and placedb.ram_mask[i]:
                 ram_x.append(x)
                 ram_y.append(y)
         
@@ -668,15 +690,16 @@ class GiFtFPGAPlacer:
         if ram_x: plt.scatter(ram_x, ram_y, c='orange', marker='d', s=20, alpha=0.8, label='RAM')
         if io_x: plt.scatter(io_x, io_y, c='red', marker='x', s=30, label='IO')
         
-        # 标题包含约束信息
-        constraints_info = []
+        # 设置标题
+        constraint_info = []
         if self.enable_boundary_constraints:
-            constraints_info.append("boundary constraint")
+            constraint_info.append("boundary constraint")
         if self.enable_resource_constraints:
-            constraints_info.append("resource constraint")
+            constraint_info.append("resource constraint")
             
-        constraints_str = ", ".join(constraints_info) if constraints_info else "no constraint"
-        plt.title(f"GiFt Placement Result ({constraints_str})")
+        constraints_str = ", ".join(constraint_info) if constraint_info else "no constraint"
+        full_title = f"{title} ({constraints_str})"
+        plt.title(full_title)
         
         # 移除图例中的重复项
         handles, labels = plt.gca().get_legend_handles_labels()
@@ -691,5 +714,7 @@ class GiFtFPGAPlacer:
         if output_file:
             plt.savefig(output_file, dpi=300, bbox_inches='tight')
             logging.info(f"可视化结果已保存到 {output_file}")
+        else:
+            plt.show()
         
-        plt.show()
+        plt.close()  # 关闭图形以释放内存
