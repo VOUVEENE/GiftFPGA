@@ -48,9 +48,11 @@ def placeFPGA(params):
         timer = Timer(params, placedb)
 
     # Random Initial Placement 
+    start_placement = time.time()
     placer = NonLinearPlaceFPGA(params, placedb, timer)
     #logging.info("non-linear placement initialization takes %.2f seconds" % (time.time()-tt))
     metrics = placer(params, placedb)
+    logging.info("Placement takes %.2f seconds" % (time.time()-start_placement))
     logging.info("Placement completed in %.2f seconds" % (time.time()-start))
 
     # write placement solution 

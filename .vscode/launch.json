@@ -7,7 +7,7 @@
             "request": "launch",
             "program": "${workspaceFolder}/dreamplacefpga/Placer.py",  // 这里指定具体的文件路径
             "args": [
-                "test/FPGA01.json"  // 传递给 Placer.py 的参数
+                "test/FPGA-example4.json"  // 传递给 Placer.py 的参数
             ],
             "console": "integratedTerminal",  // 输出在 VSCode 内置终端显示
             "justMyCode": true

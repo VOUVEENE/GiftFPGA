@@ -176,3 +176,8 @@ PYBIND11_MODULE(gift_adj_cpp, m) {
           py::arg("max_net_size") = 1000, py::arg("use_star_model") = true, 
           py::arg("star_threshold") = 100);
 }
+
+
+// rm -rf build/
+// rm -f gift_adj_cpp*.so
+// python setup.py build_ext --inplace
