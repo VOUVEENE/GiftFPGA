@@ -47,5 +47,6 @@
     "part_name": "xcvu095-ffva2104-2-e",
     "aux_input": "benchmarks/sample_ispd2016_benchmarks/FPGA02/design.aux",
     "gift_scale": 0.7,
-    "gift_center_method": 0
+    "gift_center_method": 0,
+    "gift_boundary_method": 0
 }

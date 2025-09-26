@@ -170,12 +170,13 @@ class GiFtFPGAPlacer:
         self.params = params
         self.scale = getattr(params, 'gift_scale', 0.7)
         self.center_method = getattr(params, 'gift_center_method', 'bbox')
+        self.boundary_method = getattr(params, 'gift_boundary_method', 'chip')  # 直接放这里
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # 约束开关 - 默认优化配置
         self.enable_boundary_constraints = getattr(params, 'gift_enable_boundary_constraints', True)
-        self.enable_resource_constraints = getattr(params, 'gift_enable_resource_constraints', False)  # 默认关闭
-        self.enable_hpwl = getattr(params, 'gift_enable_hpwl', False)  # 默认关闭
+        self.enable_resource_constraints = getattr(params, 'gift_enable_resource_constraints', False)
+        self.enable_hpwl = getattr(params, 'gift_enable_hpwl', False)
         self.hpwl_backend = getattr(params, 'gift_hpwl_backend', 'numpy').lower()
         
         # 布局边界
@@ -193,7 +194,8 @@ class GiFtFPGAPlacer:
         if self.enable_resource_constraints:
             timed_step("导入资源区域", self.import_resource_regions)
         
-        logger.info(f"GiFt优化版本初始化完成，使用设备: {self.device}, C++: {'启用' if CPP_AVAILABLE else '禁用'}, HPWL(enable={self.enable_hpwl}, backend={self.hpwl_backend})")
+        logger.info(f"GiFt优化版本初始化完成，使用设备: {self.device}, C++: {'启用' if CPP_AVAILABLE else '禁用'}, "
+                    f"中心方法: {self.center_method}, 边界方法: {self.boundary_method}")
 
     def import_resource_regions(self):
         """快速导入资源区域"""
@@ -285,7 +287,6 @@ class GiFtFPGAPlacer:
         if self.initial_positions is not None:
             return self.initial_positions
             
-        t0 = tic()
         placedb = self.placedb
         n = placedb.num_physical_nodes
 
@@ -306,7 +307,6 @@ class GiFtFPGAPlacer:
         positions[:placedb.num_movable_nodes] = random_initial
 
         self.initial_positions = positions
-        toc(t0, "初始化位置(initialize_positions)")
         return positions
 
     def generate_initial_locations(self, fixed_cell_location, movable_num, scale):
@@ -337,7 +337,7 @@ class GiFtFPGAPlacer:
         if self.adjacency_matrix is None:
             self.build_adjacency_matrix()
 
-        t0 = tic()
+
         
         # 初始化GPU滤波器（仅一次）
         if self.gpu_filter is None:
@@ -375,41 +375,37 @@ class GiFtFPGAPlacer:
         num_movable = self.placedb.num_movable_nodes
         optimized_positions[num_movable:] = initial_positions[num_movable:]
 
-        toc(t0, "应用GiFt滤波器(apply_gift_filters)")
+
         return optimized_positions
 
     def apply_placement_constraints(self, positions):
         """快速约束应用"""
-        t0 = tic()
-        
         if not self.enable_boundary_constraints and not self.enable_resource_constraints:
-            toc(t0, "apply_placement_constraints (跳过)")
-            return positions
+            return positions  # 直接返回，不需要 toc
         
         constrained_positions = positions.copy()
         placedb = self.placedb
         num_movable = placedb.num_movable_nodes
         
-        # 边界约束 - 向量化处理
+        # 边界约束 - 根据方法选择
         if self.enable_boundary_constraints:
             boundary_t0 = tic()
             
-            half_widths = placedb.node_size_x[:num_movable] / 2
-            half_heights = placedb.node_size_y[:num_movable] / 2
+            if self.boundary_method == 'chip':
+                constrained_positions = self._apply_chip_boundary(
+                    constrained_positions, positions, num_movable
+                )
+            elif self.boundary_method == 'fixed_bbox':
+                constrained_positions = self._apply_fixed_bbox_boundary(
+                    constrained_positions, positions, num_movable
+                )
+            else:
+                logger.warning(f"未知的boundary_method: {self.boundary_method}，使用chip方法")
+                constrained_positions = self._apply_chip_boundary(
+                    constrained_positions, positions, num_movable
+                )
             
-            x_min_bounds = placedb.xl + half_widths
-            x_max_bounds = placedb.xh - half_widths
-            y_min_bounds = placedb.yl + half_heights
-            y_max_bounds = placedb.yh - half_heights
-            
-            constrained_positions[:num_movable, 0] = np.clip(
-                positions[:num_movable, 0], x_min_bounds, x_max_bounds
-            )
-            constrained_positions[:num_movable, 1] = np.clip(
-                positions[:num_movable, 1], y_min_bounds, y_max_bounds
-            )
-            
-            toc(boundary_t0, "边界约束(向量化)")
+            toc(boundary_t0, f"边界约束({self.boundary_method})")
         
         # 资源约束 - 如果启用
         if self.enable_resource_constraints and self.resource_regions:
@@ -428,7 +424,6 @@ class GiFtFPGAPlacer:
                     constrained_positions[i] = (center_x, center_y)
             toc(resource_t0, "资源约束(逐节点)")
         
-        toc(t0, "apply_placement_constraints")
         return constrained_positions
 
     def _get_node_resource_type(self, node_id):
@@ -726,3 +721,73 @@ class GiFtFPGAPlacer:
         
         logger.info(f"使用芯片几何中心: ({xcenter:.2f}, {ycenter:.2f})")
         return xcenter, ycenter, x_range, y_range
+
+    
+    def _apply_chip_boundary(self, constrained_positions, positions, num_movable):
+        """芯片边界约束（原方法）"""
+        placedb = self.placedb
+        
+        half_widths = placedb.node_size_x[:num_movable] / 2
+        half_heights = placedb.node_size_y[:num_movable] / 2
+        
+        x_min_bounds = placedb.xl + half_widths
+        x_max_bounds = placedb.xh - half_widths
+        y_min_bounds = placedb.yl + half_heights
+        y_max_bounds = placedb.yh - half_heights
+        
+        constrained_positions[:num_movable, 0] = np.clip(
+            positions[:num_movable, 0], x_min_bounds, x_max_bounds
+        )
+        constrained_positions[:num_movable, 1] = np.clip(
+            positions[:num_movable, 1], y_min_bounds, y_max_bounds
+        )
+        
+        logger.info(f"芯片边界: x[{placedb.xl:.1f}, {placedb.xh:.1f}], "
+                    f"y[{placedb.yl:.1f}, {placedb.yh:.1f}]")
+        
+        return constrained_positions
+
+    def _apply_fixed_bbox_boundary(self, constrained_positions, positions, num_movable):
+        """固定节点边界框约束（新方法）"""
+        placedb = self.placedb
+        
+        # 获取固定节点的中心位置
+        fixed_positions = positions[num_movable:]
+        
+        if len(fixed_positions) == 0:
+            logger.warning("无固定节点，回退到芯片边界约束")
+            return self._apply_chip_boundary(constrained_positions, positions, num_movable)
+        
+        # 计算固定节点的边界框
+        x_min_fixed = np.min(fixed_positions[:, 0])
+        y_min_fixed = np.min(fixed_positions[:, 1])
+        x_max_fixed = np.max(fixed_positions[:, 0])
+        y_max_fixed = np.max(fixed_positions[:, 1])
+        
+        # 扩展边界框（可选，留一些边距）
+        margin = 20  # 可以设为参数，如 getattr(self.params, 'gift_bbox_margin', 0)
+        x_min_fixed -= margin
+        y_min_fixed -= margin
+        x_max_fixed += margin
+        y_max_fixed += margin
+        
+        # 应用约束
+        half_widths = placedb.node_size_x[:num_movable] / 2
+        half_heights = placedb.node_size_y[:num_movable] / 2
+        
+        x_min_bounds = x_min_fixed + half_widths
+        x_max_bounds = x_max_fixed - half_widths
+        y_min_bounds = y_min_fixed + half_heights
+        y_max_bounds = y_max_fixed - half_heights
+        
+        constrained_positions[:num_movable, 0] = np.clip(
+            positions[:num_movable, 0], x_min_bounds, x_max_bounds
+        )
+        constrained_positions[:num_movable, 1] = np.clip(
+            positions[:num_movable, 1], y_min_bounds, y_max_bounds
+        )
+        
+        logger.info(f"固定节点边界框: x[{x_min_fixed:.1f}, {x_max_fixed:.1f}], "
+                    f"y[{y_min_fixed:.1f}, {y_max_fixed:.1f}]")
+        
+        return constrained_positions

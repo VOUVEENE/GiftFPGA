@@ -46,5 +46,6 @@
     "gift_sigma_2": 2,
     "gift_sigma_4": 4,
     "part_name": "xcvu095-ffva2104-2-e",
-    "gift_center_method": "weighted_pin"
+    "gift_center_method": "weighted_pin",
+    "gift_boundary_method": "fixed_bbox"
 }
