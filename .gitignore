@@ -100,3 +100,24 @@ include/
 lib/
 results/
 results_no_gift/
+
+# VSCode settings
+.vscode/
+
+# Debug and log files
+debug_full_log.txt
+full_log.txt
+placement_log.txt
+*.log
+
+# Analysis scripts and results
+fpga_analysis.py
+fpga_comparison_results.csv
+fpga_detailed_results.csv
+*.png
+
+# History results
+history_results/
+
+# Debug scripts
+dreamplacefpga/gift_debug_script.py
