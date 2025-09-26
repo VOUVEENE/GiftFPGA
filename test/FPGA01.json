@@ -45,5 +45,6 @@
     "gift_optimize_large_nets": true,
     "gift_sigma_2": 2,
     "gift_sigma_4": 4,
-    "part_name": "xcvu095-ffva2104-2-e"
+    "part_name": "xcvu095-ffva2104-2-e",
+    "gift_center_method": "weighted_pin"
 }

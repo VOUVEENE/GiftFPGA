@@ -169,6 +169,7 @@ class GiFtFPGAPlacer:
         self.placedb = placedb
         self.params = params
         self.scale = getattr(params, 'gift_scale', 0.7)
+        self.center_method = getattr(params, 'gift_center_method', 'bbox')
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # 约束开关 - 默认优化配置
@@ -277,7 +278,7 @@ class GiFtFPGAPlacer:
     def set_preset_center(self, center_x, center_y):
         """设置预设中心"""
         self._preset_center = (center_x, center_y)
-        logger.info(f"使用预设中心位置: ({center_x:.2f}, {center_y:.2f})")
+        logger.info(f"预设中心位置: ({center_x:.2f}, {center_y:.2f})")
 
     def initialize_positions(self):
         """快速初始化位置"""
@@ -287,12 +288,6 @@ class GiFtFPGAPlacer:
         t0 = tic()
         placedb = self.placedb
         n = placedb.num_physical_nodes
-
-        # 使用预设中心或计算中心
-        if hasattr(self, '_preset_center'):
-            center_x, center_y = self._preset_center
-        else:
-            center_x, center_y = PlacementUtils.calculate_initial_center(placedb)
 
         # 快速生成初始位置
         positions = np.zeros((n, 2), dtype=np.float32)
@@ -315,31 +310,26 @@ class GiFtFPGAPlacer:
         return positions
 
     def generate_initial_locations(self, fixed_cell_location, movable_num, scale):
-        if len(fixed_cell_location) == 0:
-            if hasattr(self, '_preset_center'):
-                xcenter, ycenter = self._preset_center
-            else:
-                xcenter = (self.xh + self.xl) / 2
-                ycenter = (self.yh + self.yl) / 2
-            x_range = self.xh - self.xl
-            y_range = self.yh - self.yl
-        else:
-            x_min, x_max = np.min(fixed_cell_location[:, 0]), np.max(fixed_cell_location[:, 0])
-            y_min, y_max = np.min(fixed_cell_location[:, 1]), np.max(fixed_cell_location[:, 1])
-            x_range = x_max - x_min
-            y_range = y_max - y_min
-            
-            if hasattr(self, '_preset_center'):
-                xcenter, ycenter = self._preset_center
-            else:
-                xcenter = (x_max + x_min) / 2
-                ycenter = (y_max + y_min) / 2
-
-        # 向量化生成随机分布
-        random_pos = np.random.rand(int(movable_num), 2)
-        random_pos[:, 0] = ((random_pos[:, 0] - 0.5) * x_range * scale) + xcenter
-        random_pos[:, 1] = ((random_pos[:, 1] - 0.5) * y_range * scale) + ycenter
-        return random_pos
+        """
+        @brief 基于配置的方法生成随机初始位置
+        "gift_center_method": "bbox"
+        "bbox" - 你想要的边界框中心方法
+        "weighted_pin" - 原PlacementUtils的加权引脚方法
+        "chip_center" - 简单的芯片几何中心
+        """
+        # 直接根据配置选择中心计算方法（不使用预设中心）
+        xcenter, ycenter, x_range, y_range = self._calculate_center_and_range(
+            fixed_cell_location
+        )
+        
+        # 生成均匀分布的随机位置 [0, 1]
+        random_initial = np.random.rand(int(movable_num), 2)
+        
+        # 转换到目标区域
+        random_initial[:, 0] = ((random_initial[:, 0] - 0.5) * x_range * scale) + xcenter
+        random_initial[:, 1] = ((random_initial[:, 1] - 0.5) * y_range * scale) + ycenter
+        
+        return random_initial
 
     def apply_gift_filters(self, initial_positions):
         """极速GiFt滤波"""
@@ -682,3 +672,57 @@ class GiFtFPGAPlacer:
 
         plt.close()
         toc(t0, "visualize_placement_with_positions")
+
+    def _calculate_center_and_range(self, fixed_cell_location):
+        """
+        @brief 根据配置的方法计算中心和范围
+        """
+        if self.center_method == 'bbox':
+            return self._center_from_bbox(fixed_cell_location)
+        elif self.center_method == 'weighted_pin':
+            return self._center_from_weighted_pins()
+        elif self.center_method == 'chip_center':
+            return self._center_from_chip()
+        else:
+            logger.warning(f"未知的center_method: {self.center_method}，使用默认bbox方法")
+            return self._center_from_bbox(fixed_cell_location)
+    
+    def _center_from_bbox(self, fixed_cell_location):
+        """边界框中心方法"""
+        if len(fixed_cell_location) == 0:
+            xcenter = (self.xh + self.xl) / 2
+            ycenter = (self.yh + self.yl) / 2
+            x_range = self.xh - self.xl
+            y_range = self.yh - self.yl
+        else:
+            x_min = np.min(fixed_cell_location[:, 0])
+            y_min = np.min(fixed_cell_location[:, 1])
+            x_max = np.max(fixed_cell_location[:, 0])
+            y_max = np.max(fixed_cell_location[:, 1])
+            
+            xcenter = (x_max + x_min) / 2
+            ycenter = (y_max + y_min) / 2
+            x_range = x_max - x_min
+            y_range = y_max - y_min
+        
+        logger.info(f"使用边界框中心: ({xcenter:.2f}, {ycenter:.2f}), 范围: ({x_range:.2f}, {y_range:.2f})")
+        return xcenter, ycenter, x_range, y_range
+    
+    def _center_from_weighted_pins(self):
+        """加权引脚平均方法"""
+        xcenter, ycenter = PlacementUtils.calculate_initial_center(self.placedb)
+        x_range = self.xh - self.xl
+        y_range = self.yh - self.yl
+        
+        logger.info(f"使用加权引脚中心: ({xcenter:.2f}, {ycenter:.2f})")
+        return xcenter, ycenter, x_range, y_range
+    
+    def _center_from_chip(self):
+        """芯片几何中心方法"""
+        xcenter = (self.xh + self.xl) / 2
+        ycenter = (self.yh + self.yl) / 2
+        x_range = self.xh - self.xl
+        y_range = self.yh - self.yl
+        
+        logger.info(f"使用芯片几何中心: ({xcenter:.2f}, {ycenter:.2f})")
+        return xcenter, ycenter, x_range, y_range
