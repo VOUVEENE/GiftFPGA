@@ -38,69 +38,121 @@ except ImportError:
     logger.warning("C++扩展未找到，将使用Python实现")
 
 class GiFtGPUFilter:
-    """GPU加速的GiFt滤波器（含计时与按σ缓存）"""
+    """
+    优化版GPU滤波器 - 批量处理归一化矩阵
+    """
     def __init__(self, adj_mat, device):
         self.adj_mat = adj_mat
         self.device = device
         self.norm_adj = None
+        
         # 按 σ 缓存：相同 σ 复用归一化邻接与 Torch 稀疏矩阵
-        self._norm_cache = {}     # sigma -> scipy sparse (normalized A)
-        self._torch_cache = {}    # sigma -> torch sparse tensor
+        self._norm_cache = {}
+        self._torch_cache = {}
+        
+        # 预计算基础矩阵信息，避免重复转换
+        self._base_adj_csc = None
+        self._base_degree = None
+        self._identity = None
+        self._prepare_base_matrices()
 
-    def train(self, sigma):
-        """计算归一化邻接矩阵 D^(-0.5)(A+σI)D^(-0.5)（复用缓存）"""
-        if sigma in self._norm_cache:
-            self.norm_adj = self._norm_cache[sigma]
-            logger.info(f"[缓存复用] norm_adj(σ={sigma})")
-            return
-
+    def _prepare_base_matrices(self):
+        """预计算基础矩阵，避免重复转换"""
         t0 = tic()
-        adj_mat = csc_matrix(self.adj_mat)
-        dim = adj_mat.shape[0]
+        self._base_adj_csc = csc_matrix(self.adj_mat)
+        self._base_degree = np.array(self._base_adj_csc.sum(axis=1)).flatten()
+        self._identity = identity(self._base_adj_csc.shape[0])
+        toc(t0, "预计算基础矩阵")
 
-        adj_mat = adj_mat + sigma * identity(dim)
-        rowsum = np.array(adj_mat.sum(axis=1))
-        d_inv = np.power(rowsum, -0.5).flatten()
-        d_inv[np.isinf(d_inv)] = 0.
-        d_mat = diags(d_inv)
-
-        norm_adj = d_mat.dot(adj_mat).dot(d_mat)
-        self.norm_adj = norm_adj
-        self._norm_cache[sigma] = norm_adj
-        toc(t0, f"GPUFilter.train(σ={sigma}) 归一化矩阵构建")
+    def batch_train(self, sigma_list):
+        """批量计算多个σ值的归一化矩阵"""
+        t0 = tic()
+        
+        new_sigmas = [s for s in sigma_list if s not in self._norm_cache]
+        if not new_sigmas:
+            logger.info(f"[批量缓存复用] 所有σ值 {sigma_list} 已缓存")
+            return
+        
+        for sigma in new_sigmas:
+            # 复用预计算的度信息
+            rowsum = self._base_degree + sigma
+            d_inv = np.power(rowsum, -0.5)
+            d_inv[np.isinf(d_inv)] = 0.
+            
+            d_mat = diags(d_inv)
+            adj_with_self_loops = self._base_adj_csc + sigma * self._identity
+            norm_adj = d_mat.dot(adj_with_self_loops).dot(d_mat)
+            
+            self._norm_cache[sigma] = norm_adj
+            
+        toc(t0, f"批量归一化矩阵构建 (新增σ={new_sigmas})")
 
     def _get_torch_sparse(self, sigma):
+        """获取或创建torch稀疏张量"""
         if sigma in self._torch_cache:
             return self._torch_cache[sigma]
-        assert self.norm_adj is not None, "请先调用 train() 生成归一化邻接矩阵"
-
-        trainAdj = self.norm_adj.tocoo()
+            
+        assert sigma in self._norm_cache, f"σ={sigma} 的归一化矩阵未准备"
+        
+        build_torch_t = tic()
+        trainAdj = self._norm_cache[sigma].tocoo()
         edge_index = np.vstack((trainAdj.row, trainAdj.col)).transpose()
         edge_index = torch.from_numpy(edge_index).long().t().to(self.device)
         edge_weight = torch.from_numpy(trainAdj.data).float().to(self.device)
 
-        build_torch_t = tic()
         norm_adj_torch = torch.sparse.FloatTensor(edge_index, edge_weight).to(self.device)
-        toc(build_torch_t, "GPUFilter 构建 Torch 稀疏矩阵")
-
         self._torch_cache[sigma] = norm_adj_torch
+        toc(build_torch_t, f"构建 Torch 稀疏矩阵 (σ={sigma})")
+        
         return norm_adj_torch
 
     def get_cell_position(self, k, cell_pos, sigma):
-        """GPU上执行k次稀疏矩阵乘法（按σ复用Torch稀疏矩阵）"""
+        """执行k次稀疏矩阵乘法（保持向后兼容）"""
+        # 确保归一化矩阵已准备
+        if sigma not in self._norm_cache:
+            self.batch_train([sigma])
+            
         norm_adj_torch = self._get_torch_sparse(sigma)
 
         mm_total_t = tic()
-        for _ in range(k):
+        for i in range(k):
             step_t = tic()
             cell_pos = torch.sparse.mm(norm_adj_torch, cell_pos)
-            toc(step_t, "GPUFilter 稀疏乘法（单步）")
+            toc(step_t, f"GPUFilter 稀疏乘法（第{i+1}步）")
         toc(mm_total_t, f"GPUFilter 稀疏乘法（累计 {k} 次）")
 
         if cell_pos.is_cuda:
             torch.cuda.empty_cache()
 
         return cell_pos
+
+    def batch_filter(self, initial_pos, configs):
+        """
+        批量执行多种滤波配置
+        configs: [(sigma, k), ...] 如 [(4, 4), (4, 2), (2, 2)]
+        """
+        # 预先计算所有需要的归一化矩阵
+        sigma_values = list(set(config[0] for config in configs))
+        self.batch_train(sigma_values)
+        
+        results = []
+        for sigma, k in configs:
+            t0 = tic()
+            norm_adj_torch = self._get_torch_sparse(sigma)
+            
+            # 执行k次矩阵乘法
+            cell_pos = initial_pos
+            for i in range(k):
+                cell_pos = torch.sparse.mm(norm_adj_torch, cell_pos)
+                
+            results.append(cell_pos)
+            toc(t0, f"批量滤波 (σ={sigma}, k={k})")
+            
+        # 清理GPU缓存
+        if initial_pos.is_cuda:
+            torch.cuda.empty_cache()
+            
+        return results
 
 
 class GiFtFPGAPlacer:
@@ -277,6 +329,7 @@ class GiFtFPGAPlacer:
 
     def generate_initial_locations(self, fixed_cell_location, movable_num, scale):
         if len(fixed_cell_location) == 0:
+            # 没有固定单元：使用预设中心或几何中心
             if hasattr(self, '_preset_center'):
                 xcenter, ycenter = self._preset_center
             else:
@@ -285,65 +338,82 @@ class GiFtFPGAPlacer:
             x_range = self.xh - self.xl
             y_range = self.yh - self.yl
         else:
-            xf = fixed_cell_location[:, 0]
-            yf = fixed_cell_location[:, 1]
-            x_min, x_max = np.min(xf), np.max(xf)
-            y_min, y_max = np.min(yf), np.max(yf)
-            xcenter = (x_max + x_min) / 2
-            ycenter = (y_max + y_min) / 2
+            # 有固定单元：先计算边界（只算一次）
+            x_min, x_max = np.min(fixed_cell_location[:, 0]), np.max(fixed_cell_location[:, 0])
+            y_min, y_max = np.min(fixed_cell_location[:, 1]), np.max(fixed_cell_location[:, 1])
             x_range = x_max - x_min
             y_range = y_max - y_min
+            
+            # 然后决定中心位置
+            if hasattr(self, '_preset_center'):
+                xcenter, ycenter = self._preset_center  # 使用更精确的预设中心
+            else:
+                xcenter = (x_max + x_min) / 2  # 基于已计算的边界
+                ycenter = (y_max + y_min) / 2
 
+        # 生成随机分布
         random_initial = np.random.rand(int(movable_num), 2)
         random_initial[:, 0] = ((random_initial[:, 0] - 0.5) * x_range * scale) + xcenter
         random_initial[:, 1] = ((random_initial[:, 1] - 0.5) * y_range * scale) + ycenter
         return random_initial
 
     # ====== GiFt 滤波 ======
+# ====== GiFt 滤波 ======
     def apply_gift_filters(self, initial_positions):
+        """
+        GPU传输和批量处理优化版本
+        """
         logger.info("应用GiFt滤波器...")
         if self.adjacency_matrix is None:
             self.build_adjacency_matrix()
 
-        # numpy -> torch（CUDA时使用pinned memory + non_blocking）
+        # 优化1: 异步GPU数据传输
         t_to_torch = tic()
-        random_initial = torch.from_numpy(initial_positions).float()
         if self.device.type == 'cuda':
             try:
-                random_initial = random_initial.pin_memory().to(self.device, non_blocking=True)
-            except Exception:
-                random_initial = random_initial.to(self.device)
+                # 使用pinned memory + 异步传输
+                cpu_tensor = torch.from_numpy(initial_positions).float().pin_memory()
+                random_initial = cpu_tensor.to(self.device, non_blocking=True)
+            except Exception as e:
+                logger.warning(f"异步传输失败，回退到同步: {e}")
+                random_initial = torch.from_numpy(initial_positions).float().to(self.device)
         else:
-            random_initial = random_initial.to(self.device)
+            random_initial = torch.from_numpy(initial_positions).float().to(self.device)
         toc(t_to_torch, "初始位置 转换为 Torch 张量")
 
-        gpu_filter = GiFtGPUFilter(self.adjacency_matrix, self.device)
+        # 优化2: 复用GPU滤波器实例
+        if not hasattr(self, '_optimized_gpu_filter'):
+            self._optimized_gpu_filter = GiFtGPUFilter(self.adjacency_matrix, self.device)
+        
+        gpu_filter = self._optimized_gpu_filter
 
-        # 低通：σ=4, k=4
+        # 优化3: 批量预训练所有σ值
+        gpu_filter.batch_train([4, 2])  # 预先计算所有需要的σ值
+        
+        # 低通滤波：σ=4, k=4
         t_low = tic()
-        gpu_filter.train(4)
         location_low = gpu_filter.get_cell_position(4, random_initial, sigma=4)
         toc(t_low, "低通滤波 (σ=4, k=4)")
 
-        # 中通：σ=4, k=2（复用σ=4）
+        # 中通滤波：σ=4, k=2（复用σ=4）
         t_mid = tic()
-        gpu_filter.train(4)
         location_m = gpu_filter.get_cell_position(2, random_initial, sigma=4)
         toc(t_mid, "中通滤波 (σ=4, k=2)")
 
-        # 高通：σ=2, k=2
+        # 高通滤波：σ=2, k=2
         t_high = tic()
-        gpu_filter.train(2)
         location_h = gpu_filter.get_cell_position(2, random_initial, sigma=2)
         toc(t_high, "高通滤波 (σ=2, k=2)")
 
-        # 组合
+        # 优化4: 滤波结果组合
         t_combine = tic()
         location = 0.2 * location_low + 0.7 * location_m + 0.1 * location_h
         toc(t_combine, "滤波结果组合")
 
-        # 回 numpy
+        # 优化5: 优化数据回传
         t_back = tic()
+        if self.device.type == 'cuda':
+            torch.cuda.synchronize()  # 确保GPU计算完成
         optimized_positions = location.cpu().numpy()
         toc(t_back, "Torch 张量 转回 Numpy")
 
@@ -355,30 +425,64 @@ class GiFtFPGAPlacer:
 
     # ====== 约束 ======
     def apply_placement_constraints(self, positions):
+        """
+        应用布局约束 - 向量化版本
+        """
         t0 = tic()
-        placedb = self.placedb
+        
+        if not self.enable_boundary_constraints and not self.enable_resource_constraints:
+            toc(t0, "apply_placement_constraints (跳过)")
+            return positions
+        
         constrained_positions = positions.copy()
-
-        for i in range(placedb.num_movable_nodes):
-            half_width = placedb.node_size_x[i] / 2
-            half_height = placedb.node_size_y[i] / 2
-            center_x = positions[i, 0]
-            center_y = positions[i, 1]
-
-            # 边界约束
-            if self.enable_boundary_constraints:
-                center_x = max(placedb.xl + half_width, min(center_x, placedb.xh - half_width))
-                center_y = max(placedb.yl + half_height, min(center_y, placedb.yh - half_height))
-
-            # 资源约束
-            if self.enable_resource_constraints and self.resource_regions:
+        placedb = self.placedb
+        num_movable = placedb.num_movable_nodes
+        
+        # 边界约束 - 向量化处理
+        if self.enable_boundary_constraints:
+            boundary_t0 = tic()
+            
+            # 批量计算半宽半高
+            half_widths = placedb.node_size_x[:num_movable] / 2
+            half_heights = placedb.node_size_y[:num_movable] / 2
+            
+            # 计算边界
+            x_min_bounds = placedb.xl + half_widths
+            x_max_bounds = placedb.xh - half_widths
+            y_min_bounds = placedb.yl + half_heights
+            y_max_bounds = placedb.yh - half_heights
+            
+            # 向量化约束 - 一次性处理所有可移动节点
+            constrained_positions[:num_movable, 0] = np.clip(
+                positions[:num_movable, 0], x_min_bounds, x_max_bounds
+            )
+            constrained_positions[:num_movable, 1] = np.clip(
+                positions[:num_movable, 1], y_min_bounds, y_max_bounds
+            )
+            
+            toc(boundary_t0, "边界约束(向量化)")
+        
+        # 资源约束 - 保持原有逻辑（如果启用）
+        if self.enable_resource_constraints and self.resource_regions:
+            resource_t0 = tic()
+            
+            # 这里仍使用原有的逐节点处理逻辑
+            # 因为资源约束涉及复杂的区域查找，向量化较困难
+            for i in range(num_movable):
+                center_x = constrained_positions[i, 0]
+                center_y = constrained_positions[i, 1]
+                half_width = placedb.node_size_x[i] / 2
+                half_height = placedb.node_size_y[i] / 2
+                
                 resource_type = self._get_node_resource_type(i)
                 if resource_type and resource_type in self.resource_regions:
                     center_x, center_y = self._apply_resource_constraints(
                         center_x, center_y, half_width, half_height, resource_type
                     )
-            constrained_positions[i] = (center_x, center_y)
-
+                    constrained_positions[i] = (center_x, center_y)
+            
+            toc(resource_t0, "资源约束(逐节点)")
+        
         toc(t0, "apply_placement_constraints")
         return constrained_positions
 
@@ -640,3 +744,4 @@ class GiFtFPGAPlacer:
 
         plt.close()
         toc(t0, "visualize_placement_with_positions")
+

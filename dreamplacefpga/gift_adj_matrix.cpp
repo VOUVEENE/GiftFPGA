@@ -1,11 +1,38 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <vector>
-#include <unordered_map>
 #include <algorithm>
 #include <iostream>
+#include <numeric>
 
 namespace py = pybind11;
+
+// 估算总边数，用于预分配vector容量
+size_t estimate_edges(
+    py::array_t<int> netpin_start,
+    py::array_t<int> net_mask,
+    int num_nets,
+    bool use_star_model,
+    int star_threshold) {
+    
+    auto start_ptr = netpin_start.unchecked<1>();
+    auto mask_ptr = net_mask.unchecked<1>();
+    
+    size_t estimated = 0;
+    for (int net_id = 0; net_id < num_nets; ++net_id) {
+        if (!mask_ptr(net_id)) continue;
+        
+        int degree = start_ptr(net_id + 1) - start_ptr(net_id);
+        if (degree < 2) continue;
+        
+        if (use_star_model && degree > star_threshold) {
+            estimated += degree - 1;  // 星形模型：n-1条边
+        } else {
+            estimated += (size_t)degree * (degree - 1) / 2;  // clique模型：n*(n-1)/2条边
+        }
+    }
+    return estimated;
+}
 
 std::tuple<py::array_t<float>, py::array_t<int>, py::array_t<int>> 
 adj_matrix_forward_optimized(
@@ -15,9 +42,9 @@ adj_matrix_forward_optimized(
     py::array_t<float> net_weights,
     py::array_t<int> net_mask,
     int num_nodes,
-    int max_net_size = 1000,     // 超过此大小的网络跳过
-    bool use_star_model = true,  // 是否对大网络使用星形模型
-    int star_threshold = 100) {  // 星形模型的阈值
+    int max_net_size = 1000,
+    bool use_star_model = true,
+    int star_threshold = 100) {
     
     auto netpin_ptr = flat_netpin.unchecked<1>();
     auto start_ptr = netpin_start.unchecked<1>();
@@ -27,8 +54,15 @@ adj_matrix_forward_optimized(
     
     int num_nets = netpin_start.size() - 1;
     
-    // 使用map存储边权重（只存储上三角部分，避免重复）
-    std::unordered_map<long long, float> edge_weights;
+    // 预分配vector容量
+    size_t estimated_edges = estimate_edges(netpin_start, net_mask, num_nets, use_star_model, star_threshold);
+    estimated_edges *= 2; // 对称矩阵需要双倍容量
+    
+    std::vector<float> data;
+    std::vector<int> rows, cols;
+    data.reserve(estimated_edges);
+    rows.reserve(estimated_edges);
+    cols.reserve(estimated_edges);
     
     int clique_nets = 0, star_nets = 0, skipped_nets = 0;
     
@@ -63,18 +97,22 @@ adj_matrix_forward_optimized(
         float net_weight = weights_ptr(net_id);
         
         if (use_star_model && nodes.size() > star_threshold) {
-            // 星形模型：只连接到第一个节点（中心节点）
+            // 星形模型：连接到第一个节点（中心节点）
             star_nets++;
             float star_weight = 2.0f * net_weight / nodes.size();
             int center_node = nodes[0];
             
             for (size_t i = 1; i < nodes.size(); ++i) {
                 int leaf_node = nodes[i];
-                int n1 = std::min(center_node, leaf_node);
-                int n2 = std::max(center_node, leaf_node);
                 
-                long long key = ((long long)n1 << 32) | n2;
-                edge_weights[key] += star_weight;
+                // 添加对称边 (center -> leaf) 和 (leaf -> center)
+                data.push_back(star_weight);
+                rows.push_back(center_node);
+                cols.push_back(leaf_node);
+                
+                data.push_back(star_weight);
+                rows.push_back(leaf_node);
+                cols.push_back(center_node);
             }
         } else {
             // clique模型：全连接
@@ -83,11 +121,14 @@ adj_matrix_forward_optimized(
             
             for (size_t i = 0; i < nodes.size(); ++i) {
                 for (size_t j = i + 1; j < nodes.size(); ++j) {
-                    int n1 = nodes[i], n2 = nodes[j];
-                    if (n1 > n2) std::swap(n1, n2);
+                    // 添加对称边 (i -> j) 和 (j -> i)
+                    data.push_back(edge_weight);
+                    rows.push_back(nodes[i]);
+                    cols.push_back(nodes[j]);
                     
-                    long long key = ((long long)n1 << 32) | n2;
-                    edge_weights[key] += edge_weight;
+                    data.push_back(edge_weight);
+                    rows.push_back(nodes[j]);
+                    cols.push_back(nodes[i]);
                 }
             }
         }
@@ -96,46 +137,40 @@ adj_matrix_forward_optimized(
     std::cout << "网络处理统计: CLIQUE=" << clique_nets 
               << ", STAR=" << star_nets 
               << ", SKIPPED=" << skipped_nets 
-              << ", 总边数=" << edge_weights.size() << std::endl;
+              << ", 总边数=" << data.size() / 2 << std::endl;
     
-    if (edge_weights.empty()) {
+    if (data.empty()) {
         // 返回空矩阵
-        auto data = py::array_t<float>(0);
-        auto rows = py::array_t<int>(0);
-        auto cols = py::array_t<int>(0);
-        return std::make_tuple(data, rows, cols);
+        auto empty_data = py::array_t<float>(0);
+        auto empty_rows = py::array_t<int>(0);
+        auto empty_cols = py::array_t<int>(0);
+        return std::make_tuple(empty_data, empty_rows, empty_cols);
     }
     
-    // 转换为COO格式（对称矩阵）
-    size_t nnz = edge_weights.size() * 2;
-    auto data = py::array_t<float>(nnz);
-    auto rows = py::array_t<int>(nnz);
-    auto cols = py::array_t<int>(nnz);
+    // 创建numpy数组
+    auto data_array = py::array_t<float>(data.size());
+    auto rows_array = py::array_t<int>(rows.size());
+    auto cols_array = py::array_t<int>(cols.size());
     
-    auto data_ptr = data.mutable_unchecked<1>();
-    auto rows_ptr = rows.mutable_unchecked<1>();
-    auto cols_ptr = cols.mutable_unchecked<1>();
+    auto data_ptr = data_array.mutable_unchecked<1>();
+    auto rows_ptr = rows_array.mutable_unchecked<1>();
+    auto cols_ptr = cols_array.mutable_unchecked<1>();
     
-    size_t idx = 0;
-    for (const auto& edge : edge_weights) {
-        long long key = edge.first;
-        int i = (int)(key >> 32);
-        int j = (int)(key & 0xFFFFFFFF);
-        float w = edge.second;
-        
-        // 添加(i,j)和(j,i)
-        data_ptr(idx) = w; rows_ptr(idx) = i; cols_ptr(idx) = j; idx++;
-        data_ptr(idx) = w; rows_ptr(idx) = j; cols_ptr(idx) = i; idx++;
+    // 复制数据
+    for (size_t i = 0; i < data.size(); ++i) {
+        data_ptr(i) = data[i];
+        rows_ptr(i) = rows[i];
+        cols_ptr(i) = cols[i];
     }
     
-    return std::make_tuple(data, rows, cols);
+    return std::make_tuple(data_array, rows_array, cols_array);
 }
 
 PYBIND11_MODULE(gift_adj_cpp, m) {
-    m.doc() = "Optimized adjacency matrix builder for GiFt with large net handling";
+    m.doc() = "Optimized adjacency matrix builder for GiFt with improved performance";
     
     m.def("adj_matrix_forward", &adj_matrix_forward_optimized,
-          "Build adjacency matrix with star model for large nets",
+          "Build adjacency matrix with star model for large nets - optimized version",
           py::arg("flat_netpin"), py::arg("netpin_start"), py::arg("pin2node_map"),
           py::arg("net_weights"), py::arg("net_mask"), py::arg("num_nodes"),
           py::arg("max_net_size") = 1000, py::arg("use_star_model") = true, 
