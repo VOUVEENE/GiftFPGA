@@ -46,5 +46,6 @@
     "gift_use_star_model": true,
     "gift_optimize_large_nets": true,
     "gift_sigma_2": 2,
-    "gift_sigma_4": 4
+    "gift_sigma_4": 4,
+    "gift_scale": 1.0
 }

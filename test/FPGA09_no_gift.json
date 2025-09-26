@@ -45,5 +45,6 @@
     "gift_sigma_2": 2,
     "gift_sigma_4": 4,
     "part_name": "xcvu095-ffva2104-2-e",
-    "aux_input": "benchmarks/sample_ispd2016_benchmarks/FPGA09/design.aux"
+    "aux_input": "benchmarks/sample_ispd2016_benchmarks/FPGA09/design.aux",
+    "gift_scale": 1.0
 }

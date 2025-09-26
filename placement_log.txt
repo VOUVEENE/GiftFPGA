@@ -1,0 +1,7 @@
+[INFO   ] reading benchmarks/sample_ispd2016_benchmarks/FPGA-example1/design.aux
+Parsing File benchmarks/sample_ispd2016_benchmarks/FPGA-example1/design.lib
+Parsing File benchmarks/sample_ispd2016_benchmarks/FPGA-example1/design.scl
+Parsing File benchmarks/sample_ispd2016_benchmarks/FPGA-example1/design.nodes
+Parsing File benchmarks/sample_ispd2016_benchmarks/FPGA-example1/design.pl
+Parsing File benchmarks/sample_ispd2016_benchmarks/FPGA-example1/design.nets
+WARNING:DREAMPlaceFPGA:net weights are all the same, ignored
