@@ -171,6 +171,7 @@ class GiFtFPGAPlacer:
         self.scale = getattr(params, 'gift_scale', 0.7)
         self.center_method = getattr(params, 'gift_center_method', 'bbox')
         self.boundary_method = getattr(params, 'gift_boundary_method', 'chip')  # 直接放这里
+        self.bbox_margin = getattr(params, 'gift_bbox_margin', 20)  # 新增
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # 约束开关 - 默认优化配置
@@ -765,7 +766,7 @@ class GiFtFPGAPlacer:
         y_max_fixed = np.max(fixed_positions[:, 1])
         
         # 扩展边界框（可选，留一些边距）
-        margin = 20  # 可以设为参数，如 getattr(self.params, 'gift_bbox_margin', 0)
+        margin = self.bbox_margin # 可以设为参数，如 getattr(self.params, 'gift_bbox_margin', 0)
         x_min_fixed -= margin
         y_min_fixed -= margin
         x_max_fixed += margin

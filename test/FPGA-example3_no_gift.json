@@ -49,5 +49,7 @@
     "gift_sigma_4": 4,
     "gift_scale": 0.7,
     "gift_center_method": 0,
-    "gift_boundary_method": 0
+    "gift_boundary_method": 0,
+    "boundary_method": 0,
+    "gift_bbox_margin": 0
 }

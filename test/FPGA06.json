@@ -47,5 +47,7 @@
     "part_name": "xcvu095-ffva2104-2-e",
     "aux_input": "benchmarks/sample_ispd2016_benchmarks/FPGA06/design.aux",
     "gift_center_method": "weighted_pin",
-    "gift_boundary_method": "fixed_bbox"
+    "gift_boundary_method": "fixed_bbox",
+    "boundary_method": "chip",
+    "gift_bbox_margin": 20
 }
