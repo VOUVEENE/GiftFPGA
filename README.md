@@ -52,20 +52,20 @@ Please follow the installation and compilation steps provided in the upstream re
 Once DREAMPlaceFPGA is successfully built, this extension can be used directly without additional dependencies.
 
 ---
-
 ## 🚀 Running the Algorithm
 
-### Run placement with GSP-based initialization
-```bash
-python run_gift.py test/*
-```
+### GiFt-FPGA (GSP-based) initialization
+# Uses JSON files where "use_gift_init_place": 1
+python run_gift.py test/*.json
+# or run a single case directly (the JSON must have use_gift_init_place=1)
+python dreamplacefpga/Placer.py test/FPGA06.json
 
-### Baseline placement (random initialization)
-```bash
-python run_placement.sh test/*
-```
+### Baseline (random initialization)
+# Use the provided *_no_gift.json files where "use_gift_init_place": 0
+python run_placement.sh test/*_no_gift.json
+# or run a single baseline case
+python dreamplacefpga/Placer.py test/FPGA06_no_gift.json
 
----
 
 ## ⚙️ GiFt-FPGA Configuration Notes
 
