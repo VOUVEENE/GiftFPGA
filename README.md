@@ -52,7 +52,7 @@ Please follow the installation and compilation steps provided in the upstream re
 Once DREAMPlaceFPGA is successfully built, this extension can be used directly without additional dependencies.
 
 ---
-
+## 🚀 Running the Algorithm
 All placement experiments can be launched using the unified script `run_placement.sh`.
 
 - **GiFt-FPGA mode:** Use JSON files where `"use_gift_init_place": 1`  
