@@ -47,8 +47,8 @@
     "gift_optimize_large_nets": true,
     "gift_sigma_2": 2,
     "gift_sigma_4": 4,
-    "gift_center_method": "bbox",
-    "gift_boundary_method": "fixed_bbox",
+    "gift_center_method": "weighted_pin",
+    "gift_boundary_method": "chip",
     "boundary_method": "chip",
     "gift_bbox_margin": 20
 }
